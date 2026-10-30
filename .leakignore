@@ -1,0 +1,13 @@
+# Verified false positives (checked 2026-10-30, all identifier substrings or
+# deliberate synthetic canaries; no real credentials). Fingerprints are
+# stable across line-number shifts.
+# tests/test_acp_cli.py:155 — deliberate synthetic canary proving CLI dry-run
+# redaction; the value is literally SYNTHETIC_MCP_SECRET_NOT_A_CREDENTIAL.
+fp:49e12566dc92f5b6
+# src/agent_session_control/acp.py:594 — CLOSE_CONFIRM_TIMEOUT constant.
+fp:15e7042db703de19
+# src/agent_session_control/runtime.py:354,375 — MCP_CHANNEL_FLAG / MCP_CHANNEL_OVERRIDE.
+fp:8a9639856edc312b
+fp:01c5dcdbbe230b30
+# tests/test_acp_agent.py:43 — JSON Schema DRAFT202012 identifier.
+fp:859de61620842ced

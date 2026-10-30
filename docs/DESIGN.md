@@ -15,6 +15,15 @@ External applications can independently generate native launch/resume plans, con
 - The existing terminal controller, runtime adapters, input transaction, durable store and correlation implementation in the source host are the extraction reference. The coordinator inspected their launch/input/supervision boundaries. Preserve source attribution/license where code is adapted. A generic upstream module must not import the extraction source.
 - The inspected acpx public runtime contract demonstrates separating session handles, live events, terminal results and targeted cancellation. Reuse these concepts, not its TypeScript workflow engine, private state shape or orchestration policy.
 
+## Shared integration authorities
+
+- [ACP guide](~/.config/agentsync/docs/ACP_KNOWLEDGE_BASE.md#released-schema-and-sdk-coverage): stable wire/schema/SDK distinction, required content/MCP baseline, optional capability evidence and protocol lifecycle/stream mapping. The selected package/runtime coverage remains in this repository's `docs/ACP.md`.
+- [Session integration](~/.config/agentsync/docs/AGENT_SESSION_INTEGRATION_GUIDE.md#controlled-execution-ownership-and-recovery): exact binding/instance ownership, one lock owner, accepted-work recovery, serialized lifecycle, reader lifetime and full-fidelity event integration.
+- [Workspace environment](~/.config/agentsync/docs/AGENT_WORKSPACE_ENVIRONMENT_GUIDE.md#secret-safe-fixtures-and-external-run-limits): fixture confidentiality, native failure versus unavailable evidence, complete gates and actual installed-launcher/dependency handoff.
+- [Shared-code reuse](~/.config/agentsync/docs/CODE_REUSE_AND_SHARED_PLATFORM_GUIDE.md#executable-extraction-acceptance): actual production delegation and clean installed consumer, not merely a new package/hook inventory.
+
+These shared guides own reusable constraints; this design owns the selected extraction scope and acceptance obligations. Source-level corrections and partial test passes do not establish complete runtime/ACP coverage or shipped artifacts. Publication, immutable consumer pinning and full installed-path acceptance remain open until their actual evidence is recorded.
+
 ## Stable protocol baseline
 
 Official release checked 2026-10-30: `schema-v1.27.0`, source commit `97fcb0f5b88567dd91d585ea6885761365a6aa7b`, released October 27. Wire major 1 is stable; v2 remains draft. Published Python SDK is `agent-client-protocol` 0.12.1; PyPI metadata permits Python >=3.10,<3.15. The protocol worker verifies released-schema/SDK coverage and records exact references, supported operations and gaps. Schema release numbers are not wire major numbers.
@@ -41,7 +50,7 @@ Ownership may be narrowed by the dispatched brief. No UI, styling, interaction, 
 4. Native identity, run/message correlation, generation resets, foreign input and inferred versus native finality remain observable. Completion means a turn ended, never that a semantic task passed acceptance.
 5. Latest-stable ACP is tested over stdio using an actual client, with valid success/error envelopes, output ordering, lifecycle, optional capabilities, resource links, MCP configuration and cancellation cleanup. No fabricated capabilities, stop reasons, tool events, permissions or model observations.
 6. Published optional features work end-to-end for their advertised runtime/profile. Physical limitations, unavailable login/quota and backend baseline gaps are reported per profile rather than counted as passes. Unsupported profiles are not labeled fully ACP-compatible.
-7. The full library suite, Ruff, one type checker, wheel/sdist, clean install and an external consumer pass. Source-host integration runs its canonical complete checks and isolated real-terminal behavior before local installation and installed-path verification.
+7. Apply the shared [secret-safe fixture and external-limit requirements](~/.config/agentsync/docs/AGENT_WORKSPACE_ENVIRONMENT_GUIDE.md#secret-safe-fixtures-and-external-run-limits), including allowlisted synthetic MCP environment proofs instead of ambient environment dumps. The full library suite, Ruff, one type checker, wheel/sdist, clean install and an external consumer pass. Source-host integration runs its canonical complete checks and isolated real-terminal behavior before local installation and installed-path verification.
 8. Deliver one authoritative shared implementation. A temporary source-host wrapper is acceptable only when it delegates; leaving a second controller, store or parser is not extraction acceptance.
 
 Public releases/versioning of the source host are not requested here. A versioned library artifact and reproducible consumer pin are required dependency handoff, distinct from a new public product launch.

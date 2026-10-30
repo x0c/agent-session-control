@@ -3,12 +3,13 @@
 Independent Python library and JSON CLI for coding-agent session control, with an optional ACP agent interface. This is not a history parser, UI framework, task planner or vendor SDK replacement.
 
 Shared language standard: [Python](~/Codes/_standards/python.md).
+
+## Documentation index
+
 Read documents whose described content is relevant before decisions or changes.
 
-## Documents
-
 - [Design](docs/DESIGN.md): Approved scope, ownership, reference reuse, dependency direction, parallel file ownership and acceptance.
-- [Contract](docs/CONTRACT.md): Shared public models, controller port, errors and compatibility rules used by independently implemented components.
+- [Contract](docs/CONTRACT.md): Public models/controller port, full-fidelity versus bounded projections, errors and source-host compatibility.
 - [Integration](docs/INTEGRATION.md): Distribution and SDK/CLI adoption recipes; maintained by the foundation worker.
 - [Backends](docs/BACKENDS.md): Terminal control, SessKit observation, ownership and runtime coverage; maintained by the engine worker.
 - [ACP](docs/ACP.md): Released protocol/schema baseline, capability mapping, SDK differences and protocol acceptance; maintained by the ACP worker.

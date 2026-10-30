@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*$py.class
+dist/
+*.egg-info/
+.eggs/
+.venv/
+uv.lock.bak
+.pytest_cache/
+.ruff_cache/
+.pyrefly/
+htmlcov/
+.coverage*
+*.sqlite3
+.DS_Store/

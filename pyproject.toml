@@ -1,0 +1,62 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agent-session-control"
+version = "0.1.0"
+description = "Reusable coding-agent session control: pure launch plans, durable audited runs, and evidence correlation."
+readme = "README.md"
+requires-python = ">=3.10,<3.15"
+license = { text = "MIT" }
+authors = [{ name = "Agent session control contributors" }]
+keywords = ["coding-agent", "session-control", "terminal", "acp"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Software Development",
+]
+dependencies = []
+
+[project.optional-dependencies]
+history = ["sesskit>=0.2.21"]
+acp = ["agent-client-protocol>=0.12.1,<0.13"]
+
+[project.scripts]
+agent-session-control = "agent_session_control.cli:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8",
+  "pytest-asyncio>=0.23",
+  "ruff==0.16.1",
+  "pyrefly>=1.0",
+  "build>=1",
+  "jsonschema>=4",
+  "types-jsonschema>=4",
+]
+
+[tool.uv.sources]
+sesskit = { url = "https://github.com/x0c/sesskit/releases/download/v0.2.21/sesskit-0.2.21-py3-none-any.whl" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*.py" = ["E402"]

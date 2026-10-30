@@ -1,7 +1,12 @@
-# agent-session-control
+# Agent Session Control
 
-Reusable coding-agent session control: pure launch plans, durable audited runs,
-and native-evidence correlation. MIT-licensed (see [LICENSE](LICENSE)).
+**Languages:** English | [简体中文](README.zh-CN.md)
+
+Launch and track local **Claude Code**, **Codex CLI**, **OpenCode**, **Cursor**, and **Pi** coding-agent sessions from Python: pure launch plans, audited runs, and per-session stdio MCP wiring. Also ships an [agent-client-protocol](https://github.com/agent-client-protocol/agent-client-protocol) (ACP) adapter.
+
+This is a **Python library + JSON CLI + ACP adapter** — not a TUI, not a session manager, not a history parser (history observation is delegated to [SessKit](https://github.com/x0c/sesskit)).
+
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Status: 0.1.0 released and tested (see [docs/DESIGN.md](docs/DESIGN.md) and
 [docs/CONTRACT.md](docs/CONTRACT.md)). This README claims only what the
@@ -36,7 +41,7 @@ release delivers and its tests prove; per-runtime limits are listed below.
     only when the launcher owns the server — an ambient background service
     ignores it.
   - Cursor and Pi read MCP servers only from persistent config files, so they
-    honestly refuse per-launch servers (`unsupported`).
+    refuse per-launch servers with `unsupported` (no silent downgrade).
   Server specs are validated (absolute command, string args/env, identifier
   env keys, unique `[A-Za-z0-9_-]` names, stdio only, no remote transports,
   no unknown keys); secret-bearing configs on channels without a verified
@@ -73,16 +78,23 @@ Core imports need only the standard library. Optional extras:
 
 ## Install
 
-Requires Python `>=3.10,<3.15` (use 3.12; the default macOS `python3` may be
-3.15, which the ACP SDK does not support).
+Not on PyPI yet. Install the fixed-release wheel in your project's virtual environment.
 
-```sh
-WHEEL=https://github.com/x0c/agent-session-control/releases/download/v0.1.0/agent_session_control-0.1.0-py3-none-any.whl
-pip install "agent-session-control @ $WHEEL"              # core, standard library only
-pip install "agent-session-control[history] @ $WHEEL"    # + SessKit native-history observation
-pip install "agent-session-control[acp] @ $WHEEL"         # + official agent-client-protocol SDK
+Requires **Python >=3.10,<3.15 (use 3.12** — the official `agent-client-protocol` SDK does not support 3.15, which may be your macOS default `python3`).
+
+```bash
+python -m pip install "https://github.com/x0c/agent-session-control/releases/download/v0.1.0/agent_session_control-0.1.0-py3-none-any.whl"
+python -c "import agent_session_control; print(agent_session_control.__version__)"
 ```
 
+Need extras in the same install:
+
+```bash
+python -m pip install "agent-session-control[history] @ https://github.com/x0c/agent-session-control/releases/download/v0.1.0/agent_session_control-0.1.0-py3-none-any.whl"  # + SessKit native-history observation
+python -m pip install "agent-session-control[acp] @ https://github.com/x0c/agent-session-control/releases/download/v0.1.0/agent_session_control-0.1.0-py3-none-any.whl"      # + official agent-client-protocol SDK
+```
+
+Need a virtual environment first? Run `python3 -m venv .venv && . .venv/bin/activate`.
 With `uv`, SessKit resolves from its immutable published wheel:
 
 ```toml
@@ -124,7 +136,15 @@ See [docs/INTEGRATION.md](docs/INTEGRATION.md) for adoption recipes, isolated
 roots/namespaces, and platform notes. The full contract is
 [docs/CONTRACT.md](docs/CONTRACT.md).
 
-## Checks
+## Limitations
+
+- Cursor and Pi read MCP servers only from persistent config files, so per-session `mcp_servers=` is refused as `unsupported` (no silent downgrade).
+- OpenCode per-session MCP takes effect only when the launcher owns the server; an ambient background service ignores it.
+- `completed` means the correlated turn ended, never that a task passed acceptance. Missing usage stays `null`.
+
+## Development checks
+
+Contributors only — not part of installation:
 
 ```sh
 uv run --python 3.12 --group dev scripts/check.py
@@ -132,3 +152,7 @@ uv run --python 3.12 --group dev scripts/check.py
 
 Runs Ruff, Pyrefly, the complete pytest suite (warnings are failures),
 wheel/sdist packaging, and a clean offline install importing only the core.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

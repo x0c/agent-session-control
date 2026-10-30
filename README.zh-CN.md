@@ -1,7 +1,12 @@
-# agent-session-control
+# Agent Session Control
 
-可复用的编码 Agent 会话控制：纯启动计划、持久化审计运行、原生证据关联。
-MIT 许可证（见 [LICENSE](LICENSE)）。
+**语言：** [English](README.md) | 简体中文
+
+从 Python 启动并跟踪本机 **Claude Code**、**Codex CLI**、**OpenCode**、**Cursor**、**Pi** 编码助手会话：纯启动计划、可审计运行、按会话 stdio MCP 接线，并自带 [agent-client-protocol](https://github.com/agent-client-protocol/agent-client-protocol)（ACP）适配器。
+
+这是 **Python 库 + JSON 命令行 + ACP 适配器**，不是终端界面、不是会话管理器、也不是历史解析器（历史观测委托给 [SessKit](https://github.com/x0c/sesskit)）。
+
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 状态：0.1.0 已发布并通过测试（见 [docs/DESIGN.md](docs/DESIGN.md) 与
 [docs/CONTRACT.md](docs/CONTRACT.md)）。本 README 只描述本版本已交付
@@ -62,16 +67,23 @@ MIT 许可证（见 [LICENSE](LICENSE)）。
 
 ## 安装
 
-需要 Python `>=3.10,<3.15`（请用 3.12；macOS 默认 `python3` 可能是 ACP SDK
-不支持的 3.15）。
+尚未上架 PyPI。请在项目的虚拟环境中安装固定发布版本的 wheel。
 
-```sh
-WHEEL=https://github.com/x0c/agent-session-control/releases/download/v0.1.0/agent_session_control-0.1.0-py3-none-any.whl
-pip install "agent-session-control @ $WHEEL"              # 核心，仅标准库
-pip install "agent-session-control[history] @ $WHEEL"    # + SessKit 原生历史观测
-pip install "agent-session-control[acp] @ $WHEEL"         # + 官方 agent-client-protocol SDK
+需要 **Python >=3.10,<3.15（请用 3.12**；macOS 默认 `python3` 可能是官方 `agent-client-protocol` SDK 不支持的 3.15）。
+
+```bash
+python -m pip install "https://github.com/x0c/agent-session-control/releases/download/v0.1.0/agent_session_control-0.1.0-py3-none-any.whl"
+python -c "import agent_session_control; print(agent_session_control.__version__)"
 ```
 
+需要可选依赖时，在同一次安装中追加：
+
+```bash
+python -m pip install "agent-session-control[history] @ https://github.com/x0c/agent-session-control/releases/download/v0.1.0/agent_session_control-0.1.0-py3-none-any.whl"  # + SessKit 原生历史观测
+python -m pip install "agent-session-control[acp] @ https://github.com/x0c/agent-session-control/releases/download/v0.1.0/agent_session_control-0.1.0-py3-none-any.whl"      # + 官方 agent-client-protocol SDK
+```
+
+尚无虚拟环境时，先运行 `python3 -m venv .venv && . .venv/bin/activate`。
 `uv` 下 SessKit 从其不可变发布 wheel 解析：
 
 ```toml
@@ -91,6 +103,12 @@ resume = build_resume_plan("claude", {"id": "<exact-native-id>", "cwd": "/path/t
                            auto_approve=True)
 print(resume.argv)  # ('claude', '--dangerously-skip-permissions', '--resume', '<exact-native-id>')
 
+with_mcp = build_create_plan(
+    "claude", "/path/to/project",
+    mcp_servers=[{"name": "docs", "command": "/usr/local/bin/docs-mcp", "env": {"API_KEY": "..."}}],
+)
+print(with_mcp.to_dict())  # 密钥已脱敏展示；真实值只保留给子进程的 argv/env
+
 print(runtime_profile("cursor"))  # 能力、中断键、局限
 ```
 
@@ -107,7 +125,15 @@ record, created = store.create("local-user", "request-key-1",
 [docs/INTEGRATION.md](docs/INTEGRATION.md)。完整契约见
 [docs/CONTRACT.md](docs/CONTRACT.md)。
 
-## 检查
+## 局限
+
+- Cursor 与 Pi 只从持久配置文件读 MCP 服务，按会话 `mcp_servers=` 会以 `unsupported` 在启动前直接拒绝，不静默丢弃。
+- OpenCode 按会话 MCP 仅当启动方拥有 server 时生效，常驻后台服务会忽略它。
+- `completed` 只表示关联回合结束，不表示任务通过验收；缺失用量保持 `null`。
+
+## 开发检查
+
+仅贡献者需要，与安装无关：
 
 ```sh
 uv run --python 3.12 --group dev scripts/check.py
@@ -115,3 +141,7 @@ uv run --python 3.12 --group dev scripts/check.py
 
 依次运行 Ruff、Pyrefly、完整 pytest（警告即失败）、wheel/sdist 打包，
 以及仅装核心的干净离线安装验证。
+
+## 许可证
+
+MIT，见 [LICENSE](LICENSE)。

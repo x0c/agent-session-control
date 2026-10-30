@@ -1,9 +1,7 @@
 # Integration
 
-Status: foundation slice implemented and tested (0.1.0), integrated with the
-sibling engine controller, JSON CLI and ACP adapter. Sibling layers report
-their own acceptance; this guide covers what consumers can adopt today and
-the exact tested limits.
+Status: 0.1.0 released and tested. This guide covers what consumers can
+adopt today and the exact tested limits.
 
 ## Fixed-version installation
 
@@ -12,21 +10,10 @@ Requires Python `>=3.10,<3.15`. Use 3.12: the default macOS `python3` may be
 standard library.
 
 ```sh
-pip install agent-session-control==0.1.0
-pip install "agent-session-control[history]==0.1.0"  # SessKit native-history observation
-pip install "agent-session-control[acp]==0.1.0"      # official agent-client-protocol SDK
-```
-
-## Fixed-version installation
-
-Requires Python `>=3.10,<3.15`. Use 3.12: the default macOS `python3` may be
-3.15, which the optional ACP SDK does not support. Core needs only the
-standard library.
-
-```sh
-pip install agent-session-control==0.1.0
-pip install "agent-session-control[history]==0.1.0"  # SessKit native-history observation
-pip install "agent-session-control[acp]==0.1.0"      # official agent-client-protocol SDK
+WHEEL=https://github.com/x0c/agent-session-control/releases/download/v0.1.0/agent_session_control-0.1.0-py3-none-any.whl
+pip install "agent-session-control @ $WHEEL"
+pip install "agent-session-control[history] @ $WHEEL"  # SessKit native-history observation
+pip install "agent-session-control[acp] @ $WHEEL"      # official agent-client-protocol SDK
 ```
 
 `uv` users pin SessKit to its immutable published wheel (the only authority
@@ -126,7 +113,7 @@ returns only an explicitly allowlisted synthetic value, and the regression
 ambient secret appears in no tool result or log. Runtimes needing an ephemeral *file*
 channel (none of the three verified ones do) cannot be expressed with the
 current `LaunchPlan` (argv/cwd/env only, and a pure plan never creates
-files) — that needs a coordinator-approved plan extension, not a silent
+files) — that needs a plan extension, not a silent
 side channel.
 
 ## Durable runs (foundation store)
@@ -161,7 +148,7 @@ record, created = store.create(
   same-user mistakes, not hostile-tenant access. File permissions are
   `0600`/`0700`; a symlinked database file is refused.
 
-## Direct controller use (engine worker)
+## Direct controller use
 
 The controller port is `agent_session_control.models.SessionController`
 (`create`, `resume`, `start_turn`, `watch`, `wait`, `interrupt`,
@@ -169,21 +156,18 @@ The controller port is `agent_session_control.models.SessionController`
 `LocalController` accepts an explicit `root`, `namespace`, runtime/terminal/
 observer hooks and approval policy, is side-effect free to construct, and
 shares process-owned target/input locks with one authoritative operation
-store per root/namespace. The engine worker owns its behavior and
-acceptance; foundation guarantees the port shape and the plan/store/
-correlation semantics it stands on.
+store per root/namespace.
 
-## JSON CLI (ACP worker)
+## JSON CLI
 
 The entry `agent-session-control = agent_session_control.cli:main` serves
 `python -m agent_session_control
 describe|version|doctor|plan|session|run ...` with `{ok, data, error, meta}`
 envelopes (`agent_session_control.errors.ControlError.to_envelope`) and
 `--root`/`--namespace` for isolated use. ACP stdout stays protocol messages
-only; CLI envelopes never enter it. The ACP worker owns CLI behavior and
-acceptance.
+only; CLI envelopes never enter it.
 
-## ACP adapter (ACP worker)
+## ACP adapter
 
 `acp.ControlAgent` wraps any `SessionController` with one explicitly selected
 runtime per invocation so capability claims stay truthful. Protocol baseline:
@@ -229,7 +213,7 @@ invent billing).
 ## Clean external consumer (acceptance shape)
 
 ```sh
-python -m venv /tmp/consumer-venv && /tmp/consumer-venv/bin/pip install agent-session-control==0.1.0
+python -m venv /tmp/consumer-venv && /tmp/consumer-venv/bin/pip install "agent-session-control @ https://github.com/x0c/agent-session-control/releases/download/v0.1.0/agent_session_control-0.1.0-py3-none-any.whl"
 /tmp/consumer-venv/bin/python - <<'EOF'
 from agent_session_control import RunStore, build_create_plan
 print(build_create_plan("cursor", "/tmp/demo", auto_approve=True).argv)

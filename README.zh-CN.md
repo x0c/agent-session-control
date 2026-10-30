@@ -3,10 +3,9 @@
 可复用的编码 Agent 会话控制：纯启动计划、持久化审计运行、原生证据关联。
 MIT 许可证（见 [LICENSE](LICENSE)）。
 
-状态：基础层已实现并通过测试（0.1.0 版），已与同级工作者的引擎控制器、
-JSON CLI 与 ACP 适配器集成（见 [docs/DESIGN.md](docs/DESIGN.md) 与
-[docs/CONTRACT.md](docs/CONTRACT.md)）。本 README 只描述本层已交付
-并经测试证明的能力；同级层各自报告验收情况。
+状态：0.1.0 已发布并通过测试（见 [docs/DESIGN.md](docs/DESIGN.md) 与
+[docs/CONTRACT.md](docs/CONTRACT.md)）。本 README 只描述本版本已交付
+并经测试证明的能力；各运行时限制见下文。
 
 ## 今日可用（已测试）
 
@@ -67,9 +66,10 @@ JSON CLI 与 ACP 适配器集成（见 [docs/DESIGN.md](docs/DESIGN.md) 与
 不支持的 3.15）。
 
 ```sh
-pip install agent-session-control==0.1.0        # 核心，仅标准库
-pip install "agent-session-control[history]==0.1.0"
-pip install "agent-session-control[acp]==0.1.0"
+WHEEL=https://github.com/x0c/agent-session-control/releases/download/v0.1.0/agent_session_control-0.1.0-py3-none-any.whl
+pip install "agent-session-control @ $WHEEL"              # 核心，仅标准库
+pip install "agent-session-control[history] @ $WHEEL"    # + SessKit 原生历史观测
+pip install "agent-session-control[acp] @ $WHEEL"         # + 官方 agent-client-protocol SDK
 ```
 
 `uv` 下 SessKit 从其不可变发布 wheel 解析：
@@ -105,7 +105,7 @@ record, created = store.create("local-user", "request-key-1",
 
 接入指南、隔离 root/命名空间与平台说明见
 [docs/INTEGRATION.md](docs/INTEGRATION.md)。完整契约见
-[docs/CONTRACT.md](docs/CONTRACT.md)；控制器端口由同级层实现。
+[docs/CONTRACT.md](docs/CONTRACT.md)。
 
 ## 检查
 

@@ -1,10 +1,12 @@
 # Shared implementation contract
 
-Status: coordinator-locked implementation boundary, 2026-10-30. Changes affecting another worker require coordinator agreement. These are requirements for implementation, not verified shipping claims.
+Status: implementation boundary for 0.1.0, 2026-10-30; verified by the
+release gate (see README). Later changes keep this contract backward
+compatible or bump the version.
 
 ## Package and dependencies
 
-Distribution/CLI: `agent-session-control`; import: `agent_session_control`; initial version 0.1.0. Python >=3.10,<3.15 initially, matching the published optional ACP SDK. Core is standard-library only; optional `history` uses SessKit >=0.2.21, optional `acp` uses official `agent-client-protocol>=0.12.1,<0.13`. Dev dependencies include pytest, pytest-asyncio, Ruff, Pyrefly, build and schema validation as needed. The foundation worker owns manifest and lock changes; other workers report dependency changes instead of editing those files.
+Distribution/CLI: `agent-session-control`; import: `agent_session_control`; initial version 0.1.0. Python >=3.10,<3.15 initially, matching the published optional ACP SDK. Core is standard-library only; optional `history` uses SessKit >=0.2.21, optional `acp` uses official `agent-client-protocol>=0.12.1,<0.13`. Dev dependencies include pytest, pytest-asyncio, Ruff, Pyrefly, build and schema validation as needed.
 
 Top-level imports must not load ACP, SessKit, a UI framework, native histories, storage or terminals. Public API lives in explicit modules; lazy top-level conveniences are allowed. Library metadata cannot contain local checkout paths. uv may pin SessKit to its existing immutable published wheel; final host integration uses a versioned library artifact, not an editable/path dependency.
 
@@ -34,7 +36,7 @@ Extract `marker`, `wire_prompt`, `own_message`, `compact_event`, `correlate` and
 
 ## Shared models (models.py)
 
-Use typed dataclasses/Protocols; JSON serialization is explicit. Fields below are the inter-worker contract; implementations may add optional fields without requiring callers to supply them.
+Use typed dataclasses/Protocols; JSON serialization is explicit. Fields below are the public contract; implementations may add optional fields without requiring callers to supply them.
 
 - `SessionHandle`: `id: str` (opaque local control ID), `runtime: str`, `cwd: str`, `native_id: str | None`, `instance_id: str | None`. Native IDs are exact and never replaced by a shortened local control ID.
 - `ControlEvent`: `seq: int`, `kind: str`, `session_id: str`, optional `run_id: str | None`, `data: dict`, `evidence: str` (default `unknown`), `generation: str` (opaque). Event sequence is meaningful only within its generation; replay/reset is explicit.
@@ -64,7 +66,7 @@ async def list_sessions(self, *, cwd: str | None = None,
 async def load_history(self, session_id: str) -> list[ControlEvent]: ...
 ```
 
-`LocalController` accepts explicit `root: Path | None`, `namespace: str`, runtime/terminal/observer hooks and approval policy. Constructor is side-effect free. Full detail of injectable host hooks belongs to the engine worker, but they must not reverse-import a host. Persisted SDK/CLI operations on the same root/namespace share process-owned target/input locks and one authoritative operation store. Different namespaces are not tenant security isolation.
+`LocalController` accepts explicit `root: Path | None`, `namespace: str`, runtime/terminal/observer hooks and approval policy. Constructor is side-effect free. Injectable host hooks are documented in [BACKENDS](BACKENDS.md) and must not reverse-import a host. Persisted SDK/CLI operations on the same root/namespace share process-owned target/input locks and one authoritative operation store. Different namespaces are not tenant security isolation.
 
 Prompt content uses ACP-shaped content blocks for an interchange structure, without importing the ACP SDK into core. Canonical block types are `text` and `resource_link`; `resource_link` has `uri` plus optional `name`/`title`/`mimeType` metadata. A legacy neutral `resource` alias, if retained, means only a URI link and must not be confused with ACP embedded `resource` content. Normalize at the foundation boundary and use the canonical form between components. Plain text and resource links are baseline for ACP; rich content is explicitly supported or rejected. Resource data is not silently flattened in ways that lose meaning. `on_busy` distinguishes queue, steer and reject; unsupported true steering must not become a queued follow-up disguised as successful steering.
 
@@ -78,7 +80,14 @@ The protocol adapter is `acp.ControlAgent`, constructed with `controller: Sessio
 
 ACP v1 `session/prompt` stays pending until its corresponding run settles while updates stream. Preserve latest-schema capability negotiation, load versus resume semantics, actual cancellation confirmation, stdio MCP baseline and per-session configuration. Unsupported optional features are not advertised. Client filesystem/terminal delegation and approval bridging are not fabricated from post-execution history. Protocol errors and diagnostic metadata report unavailable/unknown outcomes without inventing standard stop reasons.
 
-Reusable locking, exact-instance/binding, recovery and reader-lifetime rules are maintained in the [session integration guide](~/.config/agentsync/docs/AGENT_SESSION_INTEGRATION_GUIDE.md#controlled-execution-ownership-and-recovery); ACP baseline/optional behavior and SDK differences are maintained in the [ACP guide](~/.config/agentsync/docs/ACP_KNOWLEDGE_BASE.md#adapting-an-existing-controller-to-acp). This port is a selected implementation contract, not evidence that every backend/profile has passed those requirements.
+Locking, exact-instance/binding, recovery and reader-lifetime rules: one lock
+owner per session; resume/close/detach share the lifecycle lock; live panes
+that are not verifiably owned are never adopted or killed; readers have one
+owner with explicit teardown; accepted work is reconciled, never replayed
+when uncertain. See [BACKENDS](BACKENDS.md). ACP baseline/optional behavior
+and SDK differences are recorded in [ACP](ACP.md). This port is a selected
+implementation contract, not evidence that every backend/profile has passed
+those requirements.
 
 ## Source-host integration
 

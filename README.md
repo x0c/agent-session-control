@@ -3,11 +3,9 @@
 Reusable coding-agent session control: pure launch plans, durable audited runs,
 and native-evidence correlation. MIT-licensed (see [LICENSE](LICENSE)).
 
-Status: foundation slice implemented and tested (version 0.1.0), integrated with
-the engine controller, JSON CLI and ACP adapter owned by sibling workers under
-[docs/DESIGN.md](docs/DESIGN.md) and [docs/CONTRACT.md](docs/CONTRACT.md).
-This README claims only what foundation delivers and its tests prove; sibling
-layers report their own acceptance.
+Status: 0.1.0 released and tested (see [docs/DESIGN.md](docs/DESIGN.md) and
+[docs/CONTRACT.md](docs/CONTRACT.md)). This README claims only what the
+release delivers and its tests prove; per-runtime limits are listed below.
 
 ## What works today (tested)
 
@@ -79,9 +77,10 @@ Requires Python `>=3.10,<3.15` (use 3.12; the default macOS `python3` may be
 3.15, which the ACP SDK does not support).
 
 ```sh
-pip install agent-session-control==0.1.0        # core, standard library only
-pip install "agent-session-control[history]==0.1.0"
-pip install "agent-session-control[acp]==0.1.0"
+WHEEL=https://github.com/x0c/agent-session-control/releases/download/v0.1.0/agent_session_control-0.1.0-py3-none-any.whl
+pip install "agent-session-control @ $WHEEL"              # core, standard library only
+pip install "agent-session-control[history] @ $WHEEL"    # + SessKit native-history observation
+pip install "agent-session-control[acp] @ $WHEEL"         # + official agent-client-protocol SDK
 ```
 
 With `uv`, SessKit resolves from its immutable published wheel:
@@ -123,8 +122,7 @@ record, created = store.create("local-user", "request-key-1",
 
 See [docs/INTEGRATION.md](docs/INTEGRATION.md) for adoption recipes, isolated
 roots/namespaces, and platform notes. The full contract is
-[docs/CONTRACT.md](docs/CONTRACT.md); sibling layers implement the controller
-port defined there.
+[docs/CONTRACT.md](docs/CONTRACT.md).
 
 ## Checks
 

@@ -70,7 +70,7 @@ reflects the key table, `model_selection` reflects the flag table, MCP is
 exact-locator requirement, `load_history` requires a bound native history.
 Availability means executable presence only, never login or quota.
 
-## Host injection hooks (for the integration worker)
+## Host injection hooks
 
 `SupervisorHooks` (`supervisor.py`) is the full interface. Every side
 effect is a named callable; missing callables raise `TargetError` with a

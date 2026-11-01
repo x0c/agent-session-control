@@ -10,7 +10,7 @@ Read documents whose described content is relevant before decisions or changes.
 
 - [Design](docs/DESIGN.md): Approved scope, ownership, reference reuse, dependency direction, parallel file ownership and acceptance.
 - [Contract](docs/CONTRACT.md): Public models/controller port, full-fidelity versus bounded projections, errors and source-host compatibility.
-- [Integration](docs/INTEGRATION.md): Distribution and SDK/CLI adoption recipes.
+- [Integration](docs/INTEGRATION.md): Distribution, SDK/CLI adoption, companion Skill acceptance and verification limits.
 - [Backends](docs/BACKENDS.md): Terminal control, SessKit observation, ownership and runtime coverage.
 - [ACP](docs/ACP.md): Released protocol/schema baseline, capability mapping, SDK differences and protocol acceptance.
 - Local `TASKBOARD.md` (ignored, created when needed): Active work ownership only; no public task history.

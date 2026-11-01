@@ -111,6 +111,16 @@ that read, though earlier observed selection remains separately attributable.
   client can download and install the actual index artifact. Never publish
   another contributor's uncommitted source to complete this task.
 
+## Self-description follow-up
+
+Non-blocking improvement: the revised discovery case completed through CLI help
+without loading the companion Skill, and had to inspect the MCP input shape.
+Expose the canonical MCP entry schema and private-input preparation examples in
+parser-owned `describe`/help so safe first use does not depend on Skill selection.
+This documentation update records the gap; it does not implement new CLI behavior.
+Shared procedures: [CLI pitfalls](~/.config/agentsync/skills/agent-friendly-cli/references/pitfalls.md)
+and the declared [Python standards](~/Codes/_standards/python.md).
+
 ## Delivery and test obligations
 
 1. Pure launch plans preserve native argument semantics across the five currently supported extraction-source runtimes and explicit auto-approval/model policies. New adapters remain pluggable; no dormant runtime becomes a new visible product entry.

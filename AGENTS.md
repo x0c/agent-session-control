@@ -13,6 +13,7 @@ Read documents whose described content is relevant before decisions or changes.
 - [Integration](docs/INTEGRATION.md): Distribution, SDK/CLI adoption, companion Skill acceptance and verification limits.
 - [Backends](docs/BACKENDS.md): Terminal control, SessKit observation, ownership and runtime coverage.
 - [ACP](docs/ACP.md): Released protocol/schema baseline, capability mapping, SDK differences and protocol acceptance.
+- [Security](SECURITY.md): Supported security-fix versions, private reporting and evidence redaction.
 - Local `TASKBOARD.md` (ignored, created when needed): Active work ownership only; no public task history.
 
 ## Boundaries

@@ -13,31 +13,31 @@ Status: 0.1.1 (see [docs/INTEGRATION.md](docs/INTEGRATION.md) and [docs/CONTRACT
 
 ## Install
 
-Use a fixed released wheel in your project's virtual environment.
+Install the fixed version from [PyPI](https://pypi.org/project/agent-session-control/0.1.1/) in your project's virtual environment.
 
 Requires **Python 3.10–3.14 (3.12 recommended)**. Default tmux backend runs on **macOS and Linux**; Windows/WSL are not supported. A Homebrew `python3` may be 3.15, which the optional `agent-client-protocol` SDK excludes — use a 3.10–3.14 interpreter for the `acp` extra.
 
 ```bash
 VERSION=0.1.1
-BASE=https://github.com/x0c/agent-session-control/releases/download/v${VERSION}
-WHEEL=${BASE}/agent_session_control-${VERSION}-py3-none-any.whl
 SESSKIT=https://github.com/x0c/sesskit/releases/download/v0.2.21/sesskit-0.2.21-py3-none-any.whl
 
 # Core only: plans, store, correlation, JSON CLI (stdlib only).
-python -m pip install "agent-session-control @ ${WHEEL}"
+python -m pip install "agent-session-control==${VERSION}"
 
 # Observing controller (+ SessKit native-history observation).
 # SessKit is not on PyPI: pass its fixed wheel explicitly with the extra.
 # (tool.uv.sources is uv-only and is not wheel metadata.)
-python -m pip install "sesskit @ ${SESSKIT}" "agent-session-control[history] @ ${WHEEL}"
+python -m pip install "sesskit @ ${SESSKIT}" "agent-session-control[history]==${VERSION}"
 
 # ACP adapter over the observing controller (default full setup).
-python -m pip install "sesskit @ ${SESSKIT}" "agent-session-control[history,acp] @ ${WHEEL}"
+python -m pip install "sesskit @ ${SESSKIT}" "agent-session-control[history,acp]==${VERSION}"
 
 python -c "import agent_session_control; print(agent_session_control.__version__)"
 ```
 
 Need a virtual environment first? Run `python3 -m venv .venv && . .venv/bin/activate`.
+
+The same [wheel and source archive](https://github.com/x0c/agent-session-control/releases/tag/v0.1.1) are also available on GitHub with SHA256 checksums.
 
 ## What works today (tested)
 

@@ -11,20 +11,18 @@ platform limits below). Core needs only the standard library.
 
 ```sh
 VERSION=0.1.1
-BASE=https://github.com/x0c/agent-session-control/releases/download/v${VERSION}
-WHEEL=${BASE}/agent_session_control-${VERSION}-py3-none-any.whl
 SESSKIT=https://github.com/x0c/sesskit/releases/download/v0.2.21/sesskit-0.2.21-py3-none-any.whl
 
 # Core only (launch plans, store, correlation, JSON CLI): no extras.
-pip install "agent-session-control @ ${WHEEL}"
+pip install "agent-session-control==${VERSION}"
 
 # Observing controller: SessKit is not on PyPI, so pass its fixed wheel
 # explicitly alongside the extra. (tool.uv.sources is a uv-only setting
 # and is not wheel metadata, so pip needs the URL on the command line.)
-pip install "sesskit @ ${SESSKIT}" "agent-session-control[history] @ ${WHEEL}"
+pip install "sesskit @ ${SESSKIT}" "agent-session-control[history]==${VERSION}"
 
 # ACP adapter over the observing controller (default full setup):
-pip install "sesskit @ ${SESSKIT}" "agent-session-control[history,acp] @ ${WHEEL}"
+pip install "sesskit @ ${SESSKIT}" "agent-session-control[history,acp]==${VERSION}"
 ```
 
 `uv` users keep the same fixed SessKit wheel (the only authority for
@@ -50,8 +48,9 @@ Ruff, format checking, Pyrefly, wheel/sdist checks, clean core/history/ACP/
 combined installs, plain-pip installation and a repository-external audited
 consumer also passed. The native Codex turn and headless Claude/Codex/OpenCode
 MCP fixtures used native approval defaults; these are not hosted-TUI MCP proofs.
-Linux and other supported Python versions use the CI matrix; a workflow definition
-alone is not evidence that those runs passed.
+The [six-job macOS/Linux CI matrix](https://github.com/x0c/agent-session-control/actions/runs/41302540526)
+passed on Python 3.10, 3.12 and 3.14: each job ran 368 tests and 30 subtests,
+explicitly excluding the four login/quota-gated live tests.
 
 The binding/idempotency regression is deterministic: the same immutable request
 converges after native-history discovery, on reopening and under concurrent
@@ -73,9 +72,48 @@ wait-timeout honesty.
 Assessment prompts/expected answers remain test fixtures, not installed Skill
 references. The catalog, model and case limits preclude an all-runtime guarantee.
 
-GitHub release artifacts remain the installation route. PyPI publishing is
-prepared but is not an advertised channel until registration, upload and clean
-index readback have actually succeeded.
+[GitHub Release 0.1.1](https://github.com/x0c/agent-session-control/releases/tag/v0.1.1)
+and [PyPI 0.1.1](https://pypi.org/project/agent-session-control/0.1.1/)
+are published. Their wheel and sdist SHA256 hashes match byte-for-byte. Both
+anonymous GitHub downloads and uncached, repository-external PyPI installations
+passed; the PyPI installation report resolved the package from
+`files.pythonhosted.org`, not a local wheel. Core-only and history/ACP installs
+passed separately, with the latter still explicitly supplying SessKit's fixed
+GitHub wheel. Both public installations passed all five runtimes' owned
+launch/liveness/list/close checks and the official-SDK ACP stdio handshake on
+macOS/Python 3.12.12. These smoke checks do not submit model turns or establish
+hosted-TUI MCP delivery.
+
+The [successful publisher run, attempt 2](https://github.com/x0c/agent-session-control/actions/runs/41326644997)
+used the registered `x0c/agent-session-control` / `publish.yml` / `pypi` Trusted
+Publisher. It resolved tag `v0.1.1` to commit
+`85721198e34e934703e4226e4e122b521548fe98`, checked transferred artifacts and
+published without rebuilding in the privileged job. Post-publication README,
+security-policy and receipt updates do not replace that immutable release tag.
+
+### Retained upstream action diagnostics
+
+The publisher's complete diagnostics retain these upstream Node 24 warnings;
+none is suppressed or originates in installed Python code. The release uses
+verified, pinned action versions rather than changing major action contracts
+after the artifact gate. Each follow-up is isolated workflow maintenance, not
+a reason to replace the published 0.1.1 artifacts:
+
+- `actions/setup-python` v6.0.0: `DEP0040` (`punycode`) during setup/post.
+  Origin: its upstream JavaScript bundle. Python selection is the fixed `3.12`
+  input; residual risk is upstream dependency maintenance. Follow-up: review
+  the newer official setup-python major's runner/input contract and rerun the
+  matrix before changing its SHA pin.
+- `astral-sh/setup-uv` v7.0.0: `DEP0040` and `DEP0169` (`url.parse`).
+  Origin: upstream setup/cache JavaScript, not application URL handling.
+  This run's tool download and exact-tag artifact validation passed; legacy
+  parser behavior remains a CI dependency risk. Follow-up: verify the current
+  setup-uv major's manifest/cache behavior and checksum checks before upgrading.
+- `actions/download-artifact` v7.0.0: `DEP0005` (`Buffer()`).
+  Origin: upstream artifact-download JavaScript. The transferred wheel/sdist
+  passed digest, version, tag and commit checks; deprecated buffer construction
+  remains an upstream maintenance risk. Follow-up: verify artifact layout and
+  publisher permissions with the newer artifact action before changing its pin.
 
 ## Capability matrix
 

@@ -13,31 +13,31 @@
 
 ## 安装
 
-请在项目的虚拟环境中安装固定发布版本的 wheel。
+请在项目的虚拟环境中，从 [PyPI](https://pypi.org/project/agent-session-control/0.1.1/) 安装固定版本。
 
 需要 **Python 3.10–3.14（推荐 3.12）**。默认 tmux 后端运行于 **macOS 与 Linux**；Windows/WSL 不受支持。Homebrew 的 `python3` 可能是官方 `agent-client-protocol` SDK 不支持的 3.15——安装 `acp` extra 时请使用 3.10–3.14 解释器。
 
 ```bash
 VERSION=0.1.1
-BASE=https://github.com/x0c/agent-session-control/releases/download/v${VERSION}
-WHEEL=${BASE}/agent_session_control-${VERSION}-py3-none-any.whl
 SESSKIT=https://github.com/x0c/sesskit/releases/download/v0.2.21/sesskit-0.2.21-py3-none-any.whl
 
 # 仅核心：启动计划、存储、证据关联、JSON 命令行（仅标准库）。
-python -m pip install "agent-session-control @ ${WHEEL}"
+python -m pip install "agent-session-control==${VERSION}"
 
 # 可观测控制器（+ SessKit 原生历史观测）。
 # SessKit 尚未上架 PyPI：请把其固定 wheel 与 extra 写在同一条安装命令里。
 #（tool.uv.sources 只是 uv 设置，不是 wheel 元数据，pip 需要命令行上的 URL。）
-python -m pip install "sesskit @ ${SESSKIT}" "agent-session-control[history] @ ${WHEEL}"
+python -m pip install "sesskit @ ${SESSKIT}" "agent-session-control[history]==${VERSION}"
 
 # ACP 适配器（基于可观测控制器，默认完整安装）。
-python -m pip install "sesskit @ ${SESSKIT}" "agent-session-control[history,acp] @ ${WHEEL}"
+python -m pip install "sesskit @ ${SESSKIT}" "agent-session-control[history,acp]==${VERSION}"
 
 python -c "import agent_session_control; print(agent_session_control.__version__)"
 ```
 
 尚无虚拟环境时，先运行 `python3 -m venv .venv && . .venv/bin/activate`。
+
+GitHub 也提供相同的 [wheel 与源码归档](https://github.com/x0c/agent-session-control/releases/tag/v0.1.1)，并附有 SHA256 校验文件。
 
 ## 今日可用（已测试）
 

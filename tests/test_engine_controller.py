@@ -993,14 +993,23 @@ def test_start_turn_retry_converges_after_binding_learned(tmp_path):
         stored = controller.run_store.get(first, private=True)
         assert stored["spec"]["history_path"] is None
         assert stored["spec"]["prompt"] == "same brief"
-        # Binding is learned asynchronously after acceptance.
+        # Explicit admit-before-bind ordering: the first brief submission
+        # proves the supervisor already admitted while the session was still
+        # unbound (spec None vs session None). Binding before admit would trip
+        # the target_changed guard by design; the retry convergence covers
+        # binding learned after admission.
+        _wait_for_condition(lambda: len(controller.backend.submitted) >= 1, what="first brief submission")
+        # Binding is learned asynchronously after admission.
         bind_fake(controller, handle, path="fake-history")
         assert controller.sessions.get(handle.id)["history_path"] == "fake-history"
         # Identical retry with the learned path must converge, not conflict.
         second = await controller.start_turn(handle.id, prompt, request_id="bind-race-1")
         assert second == first
         result = await controller.wait(first, timeout=20.0)
-        assert result.state == "completed"
+        record = controller.run_store.get(first)
+        assert result.state == "completed", (
+            f"expected completed, got {result.state} error={result.error} record_error={record.get('error')}"
+        )
         # No replay/double supervisor: exactly one brief submission, one run.
         assert len(controller.backend.submitted) == 1
         assert len(controller.run_store.runs) == 1

@@ -44,7 +44,7 @@ interpreter (3.12 recommended) when installing the `acp` extra.
 
 ## 0.1.1 verification
 
-The coordinator's final macOS/Python 3.12.12 gate passed 366 tests and 30
+The coordinator's final macOS/Python 3.12.12 gate passed 372 tests and 30
 subtests with warnings treated as errors, including all four live-marked tests.
 Ruff, format checking, Pyrefly, wheel/sdist checks, clean core/history/ACP/
 combined installs, plain-pip installation and a repository-external audited
@@ -63,10 +63,13 @@ the installed companion Skill. Explicit loading, selected-venv bootstrap, safe
 provided-file MCP previews, unsupported-runtime refusal and the offline-history
 component boundary passed. The revised implicit-selection case completed through
 CLI help without loading the Skill, so reliable implicit selection or an improved
-trigger rate is not claimed. A real owned Codex lifecycle returned the exact
-requested answer, converged on one run for an identical retry, and closed; its
-very short wait found an already-settled run, leaving that native timeout branch
-unexercised. Deterministic controller tests separately cover wait-timeout honesty.
+trigger rate is not claimed. A fresh session against the final installed package
+returned the exact native Codex answer, received a `wait_timeout` envelope before
+completion, converged on the same run for an identical retry after native binding,
+and confirmed close. The short-wait shell pipeline masked its numeric exit code;
+only the timeout envelope and subsequent same-run completion are native evidence.
+Deterministic CLI/controller tests separately cover numeric timeout exit and
+wait-timeout honesty.
 Assessment prompts/expected answers remain test fixtures, not installed Skill
 references. The catalog, model and case limits preclude an all-runtime guarantee.
 

@@ -121,6 +121,16 @@ This documentation update records the gap; it does not implement new CLI behavio
 Shared procedures: [CLI pitfalls](~/.config/agentsync/skills/agent-friendly-cli/references/pitfalls.md)
 and the declared [Python standards](~/Codes/_standards/python.md).
 
+## Installed-path and concurrency acceptance
+
+Clean-install probes compare resolved filesystem containment, not textual path
+prefixes: macOS temporary roots can have `/var` and `/private/var` aliases.
+Examples keep caller-selected project paths strict; CI prepares an existing,
+owned project directory rather than depending on a previous run's files.
+Concurrency regressions coordinate the intended ordering explicitly and retain
+run-state/error diagnostics on failure; a timing-dependent isolated pass is not
+proof that an asynchronous binding race is fixed.
+
 ## Delivery and test obligations
 
 1. Pure launch plans preserve native argument semantics across the five currently supported extraction-source runtimes and explicit auto-approval/model policies. New adapters remain pluggable; no dormant runtime becomes a new visible product entry.

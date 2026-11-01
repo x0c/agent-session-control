@@ -246,16 +246,20 @@ def _clean_install(wheel: str, install_args: list[str], label: str) -> None:
         # Isolated probes: PYTHONPATH is stripped so a stale source checkout
         # (e.g. an old installed 0.1.0 vs current 0.1.1 source) cannot mask
         # the wheel under test. Module path must resolve inside this venv.
+        # Resolved containment, not a textual prefix: macOS aliases /var to
+        # /private/var, so startswith() rejects a genuine in-venv import.
         clean_env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
         probe = (
-            "import agent_session_control as asc;"
+            "import agent_session_control as asc, pathlib;"
             "from agent_session_control import runtime, store, correlation;"
             "plan = runtime.build_create_plan('codex', '/repo');"
             "assert plan.argv[:2] == ('codex', '--no-daemon');"
             f"assert asc.__version__ == '{EXPECTED_VERSION}', asc.__version__;"
-            f"assert asc.__file__.startswith({tmp!r}), asc.__file__;"
-            "assert 'site-packages' in asc.__file__, asc.__file__;"
-            "print('clean install ok:', asc.__version__, asc.__file__)"
+            f"root = pathlib.Path({tmp!r}).resolve();"
+            "loc = pathlib.Path(asc.__file__).resolve();"
+            "assert loc.is_relative_to(root), (loc, root);"
+            "assert 'site-packages' in loc.as_posix(), loc;"
+            "print('clean install ok:', asc.__version__, loc)"
         )
         run(f"clean-import[{label}]", venv_python, "-c", probe, cwd=tmp, env=clean_env)
         if label in ("acp", "combined"):
@@ -393,11 +397,15 @@ def _clean_install_plain_pip(wheel: str) -> None:
         assert uri.startswith("file://"), uri
         run("clean-install[plain-pip]", venv_python, "-m", "pip", "install", uri)
         clean_env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        # Resolved containment (macOS /var alias): the module path must
+        # resolve inside this venv; a textual prefix rejects /private/var.
         probe = (
-            "import agent_session_control as asc;"
+            "import agent_session_control as asc, pathlib;"
             f"assert asc.__version__ == '{EXPECTED_VERSION}', asc.__version__;"
-            f"assert asc.__file__.startswith({tmp!r}), asc.__file__;"
-            "print('plain-pip install ok:', asc.__version__, asc.__file__)"
+            f"root = pathlib.Path({tmp!r}).resolve();"
+            "loc = pathlib.Path(asc.__file__).resolve();"
+            "assert loc.is_relative_to(root), (loc, root);"
+            "print('plain-pip install ok:', asc.__version__, loc)"
         )
         run("clean-import[plain-pip]", venv_python, "-c", probe, cwd=tmp, env=clean_env)
 

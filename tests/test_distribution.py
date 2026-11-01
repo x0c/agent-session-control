@@ -34,6 +34,22 @@ def _read_version_from_pyproject() -> str:
     raise AssertionError("version not found in pyproject.toml")
 
 
+def _project_scripts() -> dict[str, str]:
+    """Actual `[project.scripts]` aliases, parsed without tomllib (3.10 has none)."""
+    text = (REPO / "pyproject.toml").read_text(encoding="utf-8")
+    in_scripts = False
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            in_scripts = stripped == "[project.scripts]"
+            continue
+        if in_scripts and "=" in stripped and not stripped.startswith("#"):
+            name, _, target = stripped.partition("=")
+            out[name.strip()] = target.strip().strip('"').strip("'")
+    return out
+
+
 def _skill_files() -> list[str]:
     base = REPO / "skills" / "agent-session-control"
     out: list[str] = []
@@ -249,9 +265,12 @@ def test_clean_installed_skill_resources_byte_identical(built_artifacts: dict[st
     lines = probe.stdout.strip().splitlines()
     assert len(lines) >= 2
     assert lines[-1].strip() == EXPECTED_VERSION
-    assert "site-packages" in lines[0]
-    assert lines[0].startswith(str(tmp_path)), f"must import from the isolated venv, got {lines[0]}"
-    assert str(REPO / "src") not in lines[0]
+    # Resolved containment, not a textual prefix: macOS aliases /var to
+    # /private/var, so startswith() rejects a genuine in-venv import.
+    loc = Path(lines[0].strip()).resolve()
+    assert "site-packages" in loc.as_posix(), lines[0]
+    assert loc.is_relative_to(tmp_path.resolve()), f"must import from the isolated venv, got {lines[0]}"
+    assert (REPO / "src").resolve() not in loc.parents, f"source checkout leaked: {lines[0]}"
     expected = _skill_files()
     assert "SKILL.md" in expected
     assert "references/mcp.md" in [p.replace("\\", "/") for p in expected]
@@ -288,6 +307,61 @@ def test_release_helpers_use_file_uri_and_digests() -> None:
     assert "_clean_install_plain_pip" in check, "check.py must verify plain-pip file:// installs"
     assert "asc-consumer-probe-" in check, "consumer probe must use unique owned temp, no fixed /tmp path"
     assert "audit_trail" in check and "run.create" in check, "consumer probe must assert the audit row"
+
+
+# Verified Node24 action pins. Each entry was checked against the official
+# release notes, the raw action.yml at that tag (`runs.using: node24`), and the
+# release's minimum-runner floor (2.327.1, satisfied by the installed 2.338.2);
+# SHAs are the exact release-tag commits from the GitHub API. v5 of the
+# artifact actions only claimed Node24 support while still running node20 by
+# default, so the table pins the first true node24-default majors (upload v6,
+# download v7). pypa/gh-action-pypi-publish is composite (no JS runtime) and is
+# carved out explicitly below, not silently skipped.
+VERIFIED_NODE24_ACTIONS = {
+    "actions/checkout": ("v5.0.0", "08c6903cd8c0fde910a37f88322edcfb5dd907a8"),
+    "actions/setup-python": ("v6.0.0", "e797f83bcb11b83ae66e0230d6156d7c80228e7c"),
+    "astral-sh/setup-uv": ("v7.0.0", "eb1897b8dc4b5d5bfe39a428a8f2304605e0983c"),
+    "actions/upload-artifact": ("v6.0.0", "b7c566a772e6b6bfb58ed0dc250532a479d7789f"),
+    "actions/download-artifact": ("v7.0.0", "37930b1c2abaa49bbe596cd826c3c89aef350131"),
+}
+COMPOSITE_PINNED_ACTIONS = {
+    # Composite: no JS runtime, so no node deprecation applies. Pinned exactly.
+    "pypa/gh-action-pypi-publish": ("v1.14.3", "7245906fb61fa33a13554f9d5fb856fe61758086"),
+}
+
+
+def _workflow_uses_pins(text: str) -> dict[str, set[str]]:
+    pins: dict[str, set[str]] = {}
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("- uses:"):
+            continue
+        ref = stripped.split(":", 1)[1].strip().split()[0]
+        action, _, sha = ref.partition("@")
+        assert sha and len(sha) == 40 and all(c in "0123456789abcdef" for c in sha), (
+            f"action pin must be a full 40-char SHA, got {ref!r}"
+        )
+        pins.setdefault(action, set()).add(sha)
+    return pins
+
+
+def test_workflow_action_pins_are_verified_node24() -> None:
+    """Every direct action pin in both workflows targets the verified table; no node forcing."""
+    for workflow in ("ci.yml", "publish.yml"):
+        text = (REPO / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
+        assert "ACTIONS_RUNNER_FORCE_ACTIONS_NODE_VERSION" not in text, (
+            f"{workflow} must not force-mask the node runtime"
+        )
+        pins = _workflow_uses_pins(text)
+        assert pins, f"{workflow} must pin actions by SHA"
+        for action, shas in pins.items():
+            if action in COMPOSITE_PINNED_ACTIONS:
+                version, sha = COMPOSITE_PINNED_ACTIONS[action]
+            else:
+                assert action in VERIFIED_NODE24_ACTIONS, f"{workflow}: {action} is not in the verified Node24 table"
+                version, sha = VERIFIED_NODE24_ACTIONS[action]
+            assert shas == {sha}, f"{workflow}: {action} must pin {sha} ({version}), got {sorted(shas)}"
+            assert f"{action}@{sha} # {version}" in text, f"{workflow}: {action} pin must carry its version comment"
 
 
 def test_publish_validated_artifact_flow() -> None:
@@ -460,6 +534,115 @@ def test_example_plans_and_cli_envelope(tmp_path: Path) -> None:
         cwd=str(REPO),
     )
     assert unknown.returncode == 2
+
+
+def test_console_script_alias_matches_wheel_entry_points(built_artifacts: dict[str, Path]) -> None:
+    """Actual console aliases: declared `[project.scripts]` must ship verbatim in the wheel."""
+    import configparser
+
+    declared = _project_scripts()
+    assert declared, "pyproject must declare [project.scripts]"
+    assert declared.get("agent-session-control") == "agent_session_control.cli:main", declared
+    with zipfile.ZipFile(built_artifacts["wheel"]) as zf:
+        ep_name = next((n for n in zf.namelist() if n.endswith(".dist-info/entry_points.txt")), None)
+        assert ep_name is not None, "wheel must ship entry_points.txt for the console alias"
+        parser = configparser.ConfigParser()
+        parser.read_string(zf.read(ep_name).decode("utf-8"))
+    assert parser.has_section("console_scripts"), "console_scripts section must exist"
+    shipped = {k: v.strip() for k, v in parser.items("console_scripts")}
+    for alias, target in declared.items():
+        assert shipped.get(alias) == target, f"alias {alias!r} must ship as {target!r}, got {shipped}"
+
+
+def test_resolved_containment_survives_symlinked_prefix(tmp_path: Path) -> None:
+    """Deterministic /var-vs-/private/var model: textual prefix fails, resolved containment passes."""
+    real = tmp_path / "real"
+    pkg = real / "venv" / "lib" / "python3.12" / "site-packages" / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("x = 1\n", encoding="utf-8")
+    alias = tmp_path / "alias"
+    try:
+        alias.symlink_to(real, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks unavailable on this platform")
+    tmp_view = alias / "venv"  # unresolved tmp, like macOS /var/.../asc-clean-core-xxx
+    # The interpreter reports the resolved location (/private/var/... form).
+    reported = (tmp_view / "lib" / "python3.12" / "site-packages" / "pkg" / "__init__.py").resolve()
+    assert not str(reported).startswith(str(tmp_view)), "model must reproduce the macOS prefix fault"
+    assert reported.is_relative_to(tmp_view.resolve()), "resolved containment must hold through the alias"
+    assert "site-packages" in reported.as_posix()
+
+
+def test_workflow_example_path_prepares_owned_dir() -> None:
+    """Structural: CI must create the example --cwd (unique, owned, cleaned) instead of a bare path."""
+    text = (REPO / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "examples/basic_control.py" in text
+    assert "mkdir -p" in text and "asc-ci-proj" in text, "workflow must prepare the example project dir"
+    assert "${{ matrix.python }}" in text, "prepared dir must be unique per interpreter job"
+    assert "trap" in text and "rm -rf" in text, "prepared dir must be cleaned even when the example fails"
+    assert "--cwd ${{ runner.temp }}/asc-ci-proj" not in text, "workflow must not pass a bare unprepared path"
+
+
+def test_example_refuses_absent_absolute_cwd(tmp_path: Path) -> None:
+    """Refusal contract: an absolute but nonexistent --cwd exits 2, never invents state."""
+    missing = tmp_path / "absent" / "proj"  # never created
+    proc = subprocess.run(
+        [sys.executable, str(REPO / "examples" / "basic_control.py"), "--cwd", str(missing)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=str(REPO),
+    )
+    assert proc.returncode == 2, proc.stderr[-2000:]
+    assert "does not exist" in proc.stderr
+
+
+def test_installed_example_return_values_offline(built_artifacts: dict[str, Path], tmp_path: Path) -> None:
+    """Installed-wheel return contract: examples exit 0 offline against the venv install."""
+    import os
+    import shutil
+
+    wheel = built_artifacts["wheel"]
+    wheel_uri = wheel.resolve().as_uri()
+    assert wheel_uri.startswith("file://"), wheel_uri
+    venv_python = _venv_python_for(tmp_path)
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    uv = shutil.which("uv")
+    if uv is not None:
+        install = subprocess.run(
+            [uv, "pip", "install", "--python", venv_python, wheel_uri],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            env=env,
+        )
+    else:
+        install = subprocess.run(
+            [venv_python, "-m", "pip", "install", wheel_uri], capture_output=True, text=True, timeout=300, env=env
+        )
+    assert install.returncode == 0, install.stderr[-2000:]
+    project = tmp_path / "project"
+    project.mkdir()
+    offline = subprocess.run(
+        [venv_python, str(REPO / "examples" / "basic_control.py"), "--cwd", str(project)],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        cwd=str(REPO),
+        env=env,
+    )
+    assert offline.returncode == 0, offline.stderr[-3000:]
+    assert "live phases skipped" in offline.stdout
+    smoke = subprocess.run(
+        [venv_python, str(REPO / "examples" / "native_smoke.py"), "--skip-native", "--skip-stdio"],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=str(REPO),
+        env=env,
+    )
+    assert smoke.returncode == 0, smoke.stderr[-3000:]
+    assert "failures=0" in smoke.stdout
 
 
 def test_sdk_lifecycle_snippets_execute(tmp_path: Path) -> None:

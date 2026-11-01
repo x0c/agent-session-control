@@ -233,7 +233,11 @@ def _check_version_envelope(venv_python: str, tmp: str) -> None:
     if len(lines) < 2 or lines[-1].strip() != EXPECTED_VERSION:
         raise SystemExit(f"installed __version__ must be {EXPECTED_VERSION}: {probe.stdout[:500]}")
     location = lines[0].strip()
-    if not location.startswith(tmp) or "site-packages" not in location:
+    # Resolved containment, not a textual prefix: macOS aliases /var to
+    # /private/var, so startswith() rejects a genuine in-venv import.
+    # Resolve both sides and require containment, keeping site-packages.
+    resolved = Path(location).resolve()
+    if not resolved.is_relative_to(Path(tmp).resolve()) or "site-packages" not in resolved.as_posix():
         raise SystemExit(f"must import from the isolated venv ({tmp}), got {location}")
     _check_installed_skill_bytes(venv_python, tmp, env)
 

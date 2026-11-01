@@ -131,9 +131,12 @@ def test_installed_module_path_and_version(wheel_venv: Path, tmp_path: Path) -> 
     assert len(lines) >= 2, proc.stdout
     location, version = lines[0].strip(), lines[-1].strip()
     assert version == _intended_version(), f"venv imports {version}, want {_intended_version()}"
-    assert location.startswith(str(wheel_venv)), f"must import from the isolated venv, got {location}"
-    assert "site-packages" in location, location
-    assert str(REPO / "src") not in location, f"source checkout leaked into venv import: {location}"
+    # Resolved containment, not a textual prefix: macOS aliases /var to
+    # /private/var, so startswith() rejects a genuine in-venv import.
+    resolved = Path(location).resolve()
+    assert resolved.is_relative_to(wheel_venv.resolve()), f"must import from the isolated venv, got {location}"
+    assert "site-packages" in resolved.as_posix(), location
+    assert (REPO / "src").resolve() not in resolved.parents, f"source checkout leaked into venv import: {location}"
 
 
 def test_installed_version_describe_doctor(wheel_venv: Path, tmp_path: Path) -> None:

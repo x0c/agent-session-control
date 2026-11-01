@@ -2,7 +2,7 @@
 
 Independent Python library and JSON CLI for coding-agent session control, with an optional ACP agent interface. This is not a history parser, UI framework, task planner or vendor SDK replacement. No downstream-host coupling: no downstream product names, host-specific paths, or host-owned semantics belong in docs, code, or schemas.
 
-Follow standard Python packaging and typing conventions (typed dataclasses/Protocols, Ruff, one type checker).
+Follow the [shared Python standards](~/Codes/_standards/python.md): standard packaging and typing conventions (typed dataclasses/Protocols, Ruff, one type checker).
 
 ## Documentation index
 
@@ -13,7 +13,7 @@ Read documents whose described content is relevant before decisions or changes.
 - [Integration](docs/INTEGRATION.md): Distribution and SDK/CLI adoption recipes.
 - [Backends](docs/BACKENDS.md): Terminal control, SessKit observation, ownership and runtime coverage.
 - [ACP](docs/ACP.md): Released protocol/schema baseline, capability mapping, SDK differences and protocol acceptance.
-- [Taskboard](TASKBOARD.md): Active work ownership only.
+- Local `TASKBOARD.md` (ignored, created when needed): Active work ownership only; no public task history.
 
 ## Boundaries
 

@@ -11,12 +11,14 @@ storage or global configuration, and never sends a model request. Unsupported
 MCP configuration and unsupported options fail here, before any launch.
 
 Per-session stdio MCP servers travel launch-only: OpenCode through the
-private process env ``OPENCODE_CONFIG_CONTENT`` (verified with a private
-server, opencode v2.2.2), Claude through ``--mcp-config <json>`` argv plus
-``--strict-mcp-config`` (verified, claude 2.1.314), Codex through repeated
-``-c mcp_servers.<name>.*`` argv overrides (verified, codex 0.166.0).
-Cursor and Pi only read MCP servers from persistent config files, so they
-honestly refuse per-launch servers.
+private process env ``OPENCODE_CONFIG_CONTENT`` with the launcher-owned
+``--standalone`` private server (verified, opencode v2.2.5: ``--standalone
+debug config`` shows the virtual document while the ambient service ignores
+it; headless proof via ``--standalone run``), Claude through
+``--mcp-config <json>`` argv plus ``--strict-mcp-config`` (verified, claude
+2.1.314), Codex through repeated ``-c mcp_servers.<name>.*`` argv overrides
+(verified, codex 0.166.0). Cursor and Pi only read MCP servers from
+persistent config files, so they honestly refuse per-launch servers.
 
 Secret safety: server ``env`` values NEVER travel on argv. Claude argv
 carries ``${NAME}`` references (officially expanded from the process
@@ -400,9 +402,10 @@ def _builtin_profiles() -> list[RuntimeProfile]:
                 "No verified per-launch model flag on the hosted root command; "
                 "--model requests fail instead of falling back to another model.",
                 "MCP travels in the private process env (OPENCODE_CONFIG_CONTENT) and "
-                "takes effect only when the launcher owns the server (proven headless "
-                "via --standalone run); an ambient background service ignores it, so "
-                "interactive hosted delivery needs a privately owned server path.",
+                "takes effect only with the launcher-owned --standalone private server "
+                "(verified via --standalone debug config and --standalone run on v2.2.5); "
+                "an ambient background service ignores it, so hosted launches with MCP "
+                "include --standalone and never write persistent config.",
             ),
         ),
         RuntimeProfile(
@@ -571,6 +574,22 @@ def _fresh_argv(profile: RuntimeProfile, *, auto_approve: bool, extra_args: tupl
     return [profile.executable, *approve, *extra_args]
 
 
+def _ensure_opencode_standalone(argv: list[str], *, has_mcp: bool) -> list[str]:
+    """Insert the launcher-owned ``--standalone`` flag for requested MCP.
+
+    Verified against installed opencode v2.2.5: ``OPENCODE_CONFIG_CONTENT``
+    is honored only by a private server (``--standalone debug config`` shows
+    the virtual document; ambient ``debug config`` omits it and ambient
+    ``mcp list`` reports only persistent servers). Hosted launches with MCP
+    therefore use the proven ``--standalone`` path; without MCP the argv is
+    unchanged to preserve exact resume identity and no-MCP behavior. No
+    persistent config is written and ambient inheritance is never relied on.
+    """
+    if has_mcp and "--standalone" not in argv:
+        argv.insert(1, "--standalone")
+    return argv
+
+
 def _exact_id(session: Mapping[str, Any], field: str, *, what: str, hint: str | None = None) -> str:
     value = session.get(field)
     if not isinstance(value, str) or not value:
@@ -667,6 +686,8 @@ def build_create_plan(
         argv.extend([*mcp_argv, "--strict-mcp-config"])
     else:
         argv.extend(mcp_argv)
+    if profile.id == "opencode":
+        argv = _ensure_opencode_standalone(argv, has_mcp=bool(mcp_env))
     return LaunchPlan(argv=tuple(argv), cwd=_require_absolute_cwd(cwd), env=mcp_env)
 
 
@@ -696,6 +717,8 @@ def build_resume_plan(
         argv.extend([*mcp_argv, "--strict-mcp-config"])
     else:
         argv.extend(mcp_argv)
+    if profile.id == "opencode":
+        argv = _ensure_opencode_standalone(argv, has_mcp=bool(mcp_env))
     return LaunchPlan(argv=tuple(argv), cwd=_require_absolute_cwd(session.get("cwd")), env=mcp_env)
 
 

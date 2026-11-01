@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-session-control"
-version = "0.1.0"
+version = "0.1.1"
 description = "Reusable coding-agent session control: pure launch plans, durable audited runs, and evidence correlation."
 readme = "README.md"
 requires-python = ">=3.10,<3.15"
@@ -24,6 +24,12 @@ classifiers = [
   "Topic :: Software Development",
 ]
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/x0c/agent-session-control"
+Repository = "https://github.com/x0c/agent-session-control.git"
+Documentation = "https://github.com/x0c/agent-session-control/blob/main/docs/INTEGRATION.md"
+Changelog = "https://github.com/x0c/agent-session-control/blob/main/scripts/release-notes/0.1.1.md"
 
 [project.optional-dependencies]
 history = ["sesskit>=0.2.21"]
@@ -46,10 +52,16 @@ dev = [
 [tool.uv.sources]
 sesskit = { url = "https://github.com/x0c/sesskit/releases/download/v0.2.21/sesskit-0.2.21-py3-none-any.whl" }
 
+[tool.hatch.build.targets.wheel.force-include]
+"skills/agent-session-control" = "agent_session_control/skills/agent-session-control"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "function"
+markers = [
+  "live: gated live-model/native tests that spend quota or need logins (never run in default CI)",
+]
 
 [tool.ruff]
 line-length = 120

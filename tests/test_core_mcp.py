@@ -76,6 +76,28 @@ def main():
 main()
 """
 
+# Approval-bypass flags must never appear in a real acceptance launch argv.
+# Native defaults apply; an approval-policy refusal is an environment limit
+# (see APPROVAL_LIMIT_MARKERS), never a reason to relax policy.
+FORBIDDEN_LIVE_APPROVAL_FLAGS = (
+    "--dangerously-bypass-approvals-and-sandbox",
+    "--dangerously-skip-permissions",
+)
+
+# Approval-policy refusals under native defaults are environment limits,
+# never passes and never a reason to relax launch policy. Narrow multi-word
+# phrases only; generic substrings stay forbidden as skip evidence.
+APPROVAL_LIMIT_MARKERS = (
+    "approval required",
+    "requires approval",
+    "require approval",
+    "needs approval",
+    "need approval",
+    "approval policy",
+    "was not approved",
+    "did not approve",
+)
+
 # Skip only on specific observed native auth/quota evidence — never on
 # generic substrings ("auth", "try again", bare "login") and never on a bare
 # timeout. Checked only when the fixture marker is absent.
@@ -138,6 +160,8 @@ def _fail_unless_echo(label, proc, marker):
     lowered = output.lower()
     if any(mark in lowered for mark in LIMIT_MARKERS):
         pytest.skip(f"{label} refused on login/quota/capacity; limit, not a pass")
+    if any(mark in lowered for mark in APPROVAL_LIMIT_MARKERS):
+        pytest.skip(f"{label} refused on approval policy under native defaults; limit, not a pass")
     assert marker in output, f"{label} did not reach the fixture MCP server:\n{output[-3000:]}"
 
 
@@ -227,13 +251,53 @@ def test_fixture_reveals_only_allowlisted_key(tmp_path, fixture_server, nonce):
     assert "fixture-echo:hi" in transcript
 
 
+def _codex_live_argv(pairs, prompt):
+    """Actual codex acceptance launch argv: native defaults, no bypass.
+
+    ``--skip-git-repo-check`` only keeps the harness's stub ``.git`` from
+    tripping the repo check; it relaxes no approval or sandbox policy.
+    Every token of the launched argv flows through here so the guard test
+    below sees the same construction the live test launches.
+    """
+    argv = ["codex", "exec", "--skip-git-repo-check"]
+    for pair in pairs:
+        argv.extend(["-c", pair])
+    argv.append(prompt)
+    return argv
+
+
+def test_live_argv_construction_never_bypasses_approvals(tmp_path):
+    """Deterministic guard: no approval bypass can be silently reintroduced.
+
+    Runs in no-credential CI (no live marker, no model, no login). Mirrors
+    the live codex launch exactly: default plan (``auto_approve`` False)
+    plus the shared argv helper that the live test launches.
+    """
+    name = "asc-guard"
+    key = "ASC_GUARD_ENV"
+    server = {
+        "name": name,
+        "command": sys.executable,
+        "args": ["fixture.py", key],
+        "env": {key: "secret"},
+    }
+    plan = build_create_plan("codex", str(tmp_path), mcp_servers=[server])
+    pairs = [plan.argv[i + 1] for i, token in enumerate(plan.argv) if token == "-c"]
+    assert pairs, "expected per-invocation -c pairs in the default codex plan"
+    argv = _codex_live_argv(pairs, "probe")
+    for flag in FORBIDDEN_LIVE_APPROVAL_FLAGS:
+        assert flag not in argv, f"approval bypass in live argv: {flag}"
+        assert flag not in plan.argv, f"approval bypass in default plan argv: {flag}"
+
+
+@pytest.mark.live
 def test_claude_mcp_config_argv_reaches_fixture(tmp_path, fixture_server, nonce):
     _skip_unless_executable("claude")
     _check_login("claude", ["claude", "auth", "status"], lambda out: '"loggedIn": true' in out)
     name = f"asc-rt-{nonce}"
     key = f"ASC_RT_ENV_{nonce}"
     server = {"name": name, "command": sys.executable, "args": [fixture_server], "env": {key: f"secret-{nonce}"}}
-    plan = build_create_plan("claude", str(tmp_path), auto_approve=True, mcp_servers=[server])
+    plan = build_create_plan("claude", str(tmp_path), mcp_servers=[server])
     document = plan.argv[plan.argv.index("--mcp-config") + 1]
     # The argv document references the secret; the value lives only in plan.env.
     lookup = f"ASC_MCP_{name.upper().replace('-', '_')}_{key}"
@@ -255,6 +319,7 @@ def test_claude_mcp_config_argv_reaches_fixture(tmp_path, fixture_server, nonce)
     _fail_unless_echo("claude", proc, marker)
 
 
+@pytest.mark.live
 def test_codex_config_override_reaches_fixture(tmp_path, fixture_server, nonce):
     _skip_unless_executable("codex")
     _check_login("codex", ["codex", "login", "status"], lambda out: "logged in" in out.lower())
@@ -267,7 +332,7 @@ def test_codex_config_override_reaches_fixture(tmp_path, fixture_server, nonce):
         "args": [fixture_server, key],
         "env": {key: secret},
     }
-    plan = build_create_plan("codex", str(tmp_path), auto_approve=True, mcp_servers=[server])
+    plan = build_create_plan("codex", str(tmp_path), mcp_servers=[server])
     pairs = [plan.argv[i + 1] for i, token in enumerate(plan.argv) if token == "-c"]
     assert any(p.startswith(f"mcp_servers.{name}.command=") for p in pairs)
     # No inline env on argv: only the forwarding name travels there.
@@ -280,10 +345,9 @@ def test_codex_config_override_reaches_fixture(tmp_path, fixture_server, nonce):
     project = tmp_path / "proj"
     project.mkdir()
     (project / ".git").mkdir()
-    argv = ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check"]
-    for pair in pairs:
-        argv.extend(["-c", pair])
-    argv.append(f"Call the read_allowlisted tool from MCP server {name} and reply with ONLY its result.")
+    argv = _codex_live_argv(
+        pairs, f"Call the read_allowlisted tool from MCP server {name} and reply with ONLY its result."
+    )
     env = dict(os.environ, **live_env)
     proc = _run_or_skip("codex", argv, cwd=str(project), env=env)
     _fail_unless_echo("codex", proc, secret)
@@ -292,6 +356,7 @@ def test_codex_config_override_reaches_fixture(tmp_path, fixture_server, nonce):
         assert name not in handle.read()
 
 
+@pytest.mark.live
 def test_opencode_env_config_reaches_fixture(tmp_path, fixture_server, nonce):
     opencode = _skip_unless_executable("opencode")
     _check_login("opencode", [opencode, "auth", "list"], lambda out: "stored" in out.lower())
@@ -299,7 +364,7 @@ def test_opencode_env_config_reaches_fixture(tmp_path, fixture_server, nonce):
     server = {"name": name, "command": sys.executable, "args": [fixture_server], "env": {}}
     project = tmp_path / "proj"
     project.mkdir()
-    plan = build_create_plan("opencode", str(project), auto_approve=True, mcp_servers=[server])
+    plan = build_create_plan("opencode", str(project), mcp_servers=[server])
     content = plan.to_dict(include_env=True)["env"]["OPENCODE_CONFIG_CONTENT"]
     assert json.loads(content)["mcp"]["servers"][name]["command"][0] == sys.executable
     home = os.path.expanduser("~")

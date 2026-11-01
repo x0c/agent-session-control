@@ -52,7 +52,7 @@ from agent_session_control.runtime import (
 )
 from agent_session_control.store import RunStore, default_home, digest, run_version
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "__version__",

@@ -104,13 +104,12 @@ def _takes_text_limit(func_name: str) -> bool:
 
 
 def project_event(event: Any, text_limit: int | None = None) -> dict:
-    """Neutral event projection over the shared implementation.
+    """Lossless neutral projection over the shared implementation.
 
-    Uses ``correlation.project_event`` with the requested limit when the
-    foundation provides it (``text_limit=None`` means complete replay).
-    Until that function lands, the bounded ``compact_event`` applies and
-    replay stays summary-capped; no second projection algorithm lives here
-    (see the losslessness gap note in BACKENDS.md).
+    Delegates to ``correlation.project_event``; ``text_limit=None`` (default)
+    keeps complete text, message/call identity, roles, tool result/error/
+    interaction/evidence records and full Unicode. Bounded callers pass an
+    explicit limit. No second projection algorithm lives here.
     """
     project = getattr(_correlation, "project_event", None)
     if project is None or not _takes_text_limit("project_event"):
@@ -140,6 +139,7 @@ class ActivityObservation:
     current_turn: bool = True
     pending_interaction: bool = False
     events: list[Any] = field(default_factory=list)
+    generation: str = ""
 
     def as_dict(self) -> dict:
         return {
@@ -156,6 +156,7 @@ class ActivityObservation:
             "current_turn": self.current_turn,
             "pending_interaction": self.pending_interaction,
             "events": list(self.events),
+            "generation": self.generation,
         }
 
     @classmethod
@@ -174,6 +175,7 @@ class ActivityObservation:
             current_turn=bool(data.get("current_turn", True)),
             pending_interaction=bool(data.get("pending_interaction", False)),
             events=list(data.get("events", [])),
+            generation=str(data.get("generation", "") or ""),
         )
 
 
@@ -219,9 +221,9 @@ def correlate(
 def build_result(observation: ActivityObservation | dict, *, text_limit: int | None = None) -> dict:
     """Summarize the correlated range. Completion means the turn ended.
 
-    ``text_limit=None`` requests the lossless final response; it takes
-    effect once the shared implementation supports it (see
-    :func:`project_event`).
+    ``text_limit=None`` (default) requests the lossless final response and
+    full error projections via the shared implementation; bounded callers
+    pass an explicit limit for the historical compact shape.
     """
     if isinstance(observation, ActivityObservation):
         observation = observation.as_dict()
@@ -301,12 +303,14 @@ class HistoryObserver:
 
         ``reset`` means the native history was replaced (truncated/rotated):
         attribution built so far is void and the run must become unknown,
-        never silently rebound.
+        never silently rebound. The returned observation carries the poll's
+        ``generation`` so live store events preserve it.
         """
         sesskit = _sesskit()
         poll = reader.poll()
+        generation = str(getattr(poll, "generation", "") or "")
         if poll.reset and events:
-            return ActivityObservation(recorded=bool(events)), True
+            return ActivityObservation(recorded=bool(events), generation=generation), True
         for event in poll.events:
             events[event.seq] = event
         ordered = [events[k] for k in sorted(events)]
@@ -323,7 +327,9 @@ class HistoryObserver:
             turns = list(sesskit.derive_turns(snapshot, runtime=runtime or self.runtime))
         except Exception as exc:
             raise HistoryError("history_unavailable", f"native turns could not be derived: {exc}") from exc
-        return correlate(ordered, turns, run_id, baseline_seq, namespaces=self.namespaces), False
+        observation = correlate(ordered, turns, run_id, baseline_seq, namespaces=self.namespaces)
+        observation.generation = generation
+        return observation, False
 
     def correlate_run(
         self, snapshot_or_events: Any, run_id: str, baseline_seq: int, runtime: str = ""
@@ -332,6 +338,7 @@ class HistoryObserver:
         sesskit = _sesskit()
         if isinstance(snapshot_or_events, (list, tuple)):
             events = list(snapshot_or_events)
+            generation = ""
             try:
                 from sesskit.models import ActivitySnapshot  # pyrefly: ignore[missing-import]
 
@@ -343,11 +350,15 @@ class HistoryObserver:
         else:
             snapshot = snapshot_or_events
             events = list(snapshot.events)
+            generation = str(getattr(snapshot, "generation", "") or "")
         try:
             turns = list(sesskit.derive_turns(snapshot, runtime=runtime or self.runtime))
         except Exception as exc:
             raise HistoryError("history_unavailable", f"native turns could not be derived: {exc}") from exc
-        return correlate(events, turns, run_id, baseline_seq, namespaces=self.namespaces)
+        observation = correlate(events, turns, run_id, baseline_seq, namespaces=self.namespaces)
+        if not observation.generation:
+            observation.generation = generation
+        return observation
 
     def find_exact(self, runtime_id: str, native_id: str, *, limit: int = 50) -> dict | None:
         """Find one native session by exact id through public SessKit scans.

@@ -46,7 +46,9 @@ def _pkg_version() -> str:
 
         return version(PACKAGE_NAME)
     except Exception:
-        return "0.1.0"
+        from agent_session_control import __version__ as canonical
+
+        return canonical
 
 
 def _meta_extra() -> dict:
@@ -73,6 +75,12 @@ ARG_MCP = {
     "flags": ("--mcp-servers",),
     "default": None,
     "help": "JSON array of stdio MCP servers for this session (default: none).",
+}
+ARG_MCP_FILE = {
+    "flags": ("--mcp-servers-file",),
+    "default": None,
+    "help": "Path to a JSON array file of stdio MCP servers; '-' reads piped stdin. "
+    "Mutually exclusive with --mcp-servers; prefer this file channel for secrets.",
 }
 ARG_SESSION_ID = {"flags": ("--session-id",), "required": True, "help": "Exact local control session id."}
 ARG_RUN_ID = {"flags": ("--run-id",), "required": True, "help": "Durable run id returned by run submit."}
@@ -126,6 +134,7 @@ COMMANDS: dict[str, dict] = {
             ARG_MODEL,
             ARG_DRY_RUN,
             ARG_MCP,
+            ARG_MCP_FILE,
         ],
         "examples": ["session create --runtime pi --cwd /tmp/proj"],
     },
@@ -140,6 +149,7 @@ COMMANDS: dict[str, dict] = {
             {"flags": ("--cwd",), "default": None, "help": "Optional cwd; must match the stored session when given."},
             ARG_DRY_RUN,
             ARG_MCP,
+            ARG_MCP_FILE,
         ],
         "examples": ["session resume --session-id ses_abc"],
     },
@@ -398,6 +408,62 @@ def _parse_mcp_servers(raw: str | None) -> tuple:
     return tuple(servers)
 
 
+MAX_MCP_FILE_CHARS = 1_000_000
+
+
+def _read_mcp_servers_file(path: str | None) -> str:
+    """Read MCP JSON without ever echoing its values in errors."""
+    if not path:
+        return ""
+    if path == "-":
+        if sys.stdin.isatty():
+            raise ControlError("usage_error", "--mcp-servers-file - needs piped stdin.", 2)
+        try:
+            text = sys.stdin.read(MAX_MCP_FILE_CHARS + 1)
+        except (OSError, UnicodeDecodeError, ValueError):
+            raise ControlError("usage_error", "Cannot read --mcp-servers-file from stdin.", 2) from None
+    else:
+        try:
+            with open(path, encoding="utf-8") as handle:
+                text = handle.read(MAX_MCP_FILE_CHARS + 1)
+        except (OSError, UnicodeDecodeError, ValueError):
+            raise ControlError("usage_error", "Cannot read --mcp-servers-file.", 2) from None
+    if not text.strip():
+        raise ControlError("usage_error", "--mcp-servers-file is empty.", 2)
+    if "\x00" in text:
+        raise ControlError("usage_error", "--mcp-servers-file contains a NUL byte.", 2)
+    if len(text) > MAX_MCP_FILE_CHARS:
+        raise ControlError("usage_error", "--mcp-servers-file exceeds the size limit.", 2)
+    return text
+
+
+def _resolve_mcp_servers(args: Any) -> tuple:
+    """Mutually exclusive inline vs file MCP input; file never echoes values."""
+    inline = getattr(args, "mcp_servers", None)
+    file_path = getattr(args, "mcp_servers_file", None)
+    if inline is not None and file_path is not None:
+        raise ControlError(
+            "usage_error",
+            "Pass exactly one of --mcp-servers or --mcp-servers-file.",
+            2,
+        )
+    if file_path:
+        raw = _read_mcp_servers_file(file_path)
+        try:
+            servers = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ControlError("usage_error", f"--mcp-servers-file is not valid JSON: {exc}.", 2) from exc
+        if not isinstance(servers, list):
+            raise ControlError("usage_error", "--mcp-servers-file must be a JSON array.", 2)
+        for entry in servers:
+            if not isinstance(entry, dict) or not entry.get("command"):
+                raise ControlError(
+                    "usage_error", "Each --mcp-servers-file entry needs an object with a 'command' path.", 2
+                )
+        return tuple(servers)
+    return _parse_mcp_servers(inline)
+
+
 # -- controller ------------------------------------------------------------------
 
 
@@ -544,7 +610,7 @@ def cmd_plan_resume(args: Any, _factory: Any = None) -> dict:
 def cmd_session_create(args: Any, factory: Any = None) -> dict:
     cwd = _validate_cwd(args.cwd)
     _guard_create_directory(cwd)
-    servers = _parse_mcp_servers(args.mcp_servers)
+    servers = _resolve_mcp_servers(args)
     if args.dry_run:
         from agent_session_control import runtime as runtime_mod
 
@@ -576,7 +642,7 @@ def cmd_session_create(args: Any, factory: Any = None) -> dict:
 
 def cmd_session_resume(args: Any, factory: Any = None) -> dict:
     session_id = _validate_key(args.session_id, name="--session-id")
-    servers = _parse_mcp_servers(args.mcp_servers)
+    servers = _resolve_mcp_servers(args)
     if args.dry_run:
         return {"dry_run": True, "status": "planned", "session": {"id": session_id, "cwd": args.cwd}}
     controller = (factory or _default_controller)(args)

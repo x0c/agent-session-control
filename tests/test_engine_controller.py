@@ -968,3 +968,165 @@ def test_close_racing_resume_keeps_closed(tmp_path):
         assert final["pane"] is None, "no new live pane may survive a reported close"
 
     asyncio.run(go())
+
+
+def _wait_for_condition(predicate, *, timeout=30.0, what="condition"):
+    deadline = time.monotonic() + timeout
+    while True:
+        if predicate():
+            return True
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"timed out waiting for {what}")
+        time.sleep(0.05)
+
+
+def test_start_turn_retry_converges_after_binding_learned(tmp_path):
+    """Identical retry after async binding converges (history_path excluded)."""
+
+    async def go():
+        controller = make_controller(tmp_path)
+        controller._observer = canned_history([])
+        handle = await create_session(controller, tmp_path)
+        prompt = [{"type": "text", "text": "same brief"}]
+        # First accept while unbound: stored spec records history_path None.
+        first = await controller.start_turn(handle.id, prompt, request_id="bind-race-1")
+        stored = controller.run_store.get(first, private=True)
+        assert stored["spec"]["history_path"] is None
+        assert stored["spec"]["prompt"] == "same brief"
+        # Binding is learned asynchronously after acceptance.
+        bind_fake(controller, handle, path="fake-history")
+        assert controller.sessions.get(handle.id)["history_path"] == "fake-history"
+        # Identical retry with the learned path must converge, not conflict.
+        second = await controller.start_turn(handle.id, prompt, request_id="bind-race-1")
+        assert second == first
+        result = await controller.wait(first, timeout=20.0)
+        assert result.state == "completed"
+        # No replay/double supervisor: exactly one brief submission, one run.
+        assert len(controller.backend.submitted) == 1
+        assert len(controller.run_store.runs) == 1
+        # Historical submit spec is preserved (still None), not rewritten.
+        preserved = controller.run_store.get(first, private=True)
+        assert preserved["spec"]["history_path"] is None
+        # Changed payloads still conflict after binding.
+        with pytest.raises(ControlError) as excinfo:
+            await controller.start_turn(
+                handle.id, [{"type": "text", "text": "different brief"}], request_id="bind-race-1"
+            )
+        assert excinfo.value.code == "idempotency_conflict"
+        with pytest.raises(ControlError) as excinfo2:
+            await controller.start_turn(handle.id, prompt, request_id="bind-race-1", on_busy="reject")
+        assert excinfo2.value.code == "idempotency_conflict"
+        assert len(controller.backend.submitted) == 1, "conflicts must not submit"
+
+    asyncio.run(go())
+
+
+def test_start_turn_reopened_controller_converges_after_binding(tmp_path):
+    """Reopened controller on the same root reuses the bound run (real store)."""
+    from agent_session_control.store import RunStore
+
+    async def go():
+        root = str(tmp_path / "control")
+        store = RunStore(root, namespace="test")
+        first = make_controller(tmp_path, root=root, namespace="test", store=store)
+        first._observer = canned_history([])
+        handle = await create_session(first, tmp_path)
+        prompt = [{"type": "text", "text": "durable brief"}]
+        run_a = await first.start_turn(handle.id, prompt, request_id="reopen-1")
+        _wait_for_condition(lambda: len(first.backend.submitted) >= 1, what="first brief submission")
+        # Binding learned after acceptance (supervisor claim path).
+        first.sessions.put(
+            {**first.sessions.get(handle.id), "history_path": "fake-history"},
+            actor="test",
+            action="session.bound",
+        )
+        reopened = LocalController(
+            root=root,
+            namespace="test",
+            runtime_profiles={"echo": fakes.EchoProfile()},
+            terminal=fakes.ScriptBackend(),
+            observer=canned_history([]),
+            store=RunStore(root, namespace="test"),
+            spawn=False,
+        )
+        run_b = await reopened.start_turn(handle.id, prompt, request_id="reopen-1")
+        assert run_b == run_a, "the immutable request id converges, not forks"
+        result = await reopened.wait(run_a, timeout=20.0)
+        assert result.state == "completed"
+        # One durable run, one submission on the owning backend; reopened
+        # convergence must not replay the brief on its own backend.
+        assert len(reopened.backend.submitted) == 0
+        assert len(first.backend.submitted) == 1
+        trail = store.audit_trail(run_a)
+        creates = [e for e in trail if e["action"] == "run.create"]
+        assert len(creates) == 1, f"exactly one durable acceptance, got {len(creates)}"
+        stored = store.get(run_a, private=True)
+        assert stored["spec"]["prompt"] == "durable brief"
+        with pytest.raises(ControlError) as excinfo:
+            await reopened.start_turn(handle.id, [{"type": "text", "text": "changed"}], request_id="reopen-1")
+        assert excinfo.value.code == "idempotency_conflict"
+
+    asyncio.run(go())
+
+
+def test_start_turn_concurrent_same_key_converges_single_run(tmp_path):
+    """Concurrent identical retries behind a barrier converge to one run."""
+    import threading
+
+    from agent_session_control.store import RunStore
+
+    async def _make_and_start(root, barrier, results, errors, index):
+        try:
+            store = RunStore(root, namespace="test")
+            controller = make_controller(
+                tmp_path,
+                root=root,
+                namespace="test",
+                store=store,
+                observer=canned_history([]),
+            )
+            if index == 0:
+                handle = await create_session(controller, tmp_path)
+                barrier._handle_id[0] = handle.id
+            barrier.wait(15)
+            handle_id = barrier._handle_id[0]
+            # All parties observe the bound row; intent is identical.
+            prompt = [{"type": "text", "text": "concurrent brief"}]
+            run_id = await controller.start_turn(handle_id, prompt, request_id="conc-1")
+            results[index] = (run_id, controller)
+        except BaseException as exc:  # noqa: BLE001 - collected for assertion
+            errors[index] = exc
+
+    root = str(tmp_path / "control")
+    seed = make_controller(tmp_path, root=root, namespace="test", store=RunStore(root, namespace="test"))
+    seed._observer = canned_history([])
+
+    async def go():
+        handle = await create_session(seed, tmp_path)
+        bind_fake(seed, handle, path="fake-history")
+        return handle.id
+
+    handle_id = asyncio.run(go())
+    barrier = threading.Barrier(4)
+    barrier._handle_id = [handle_id]
+    results: dict = {}
+    errors: dict = {}
+    workers = [
+        threading.Thread(target=lambda i=i: asyncio.run(_make_and_start(root, barrier, results, errors, i)))
+        for i in range(4)
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(30)
+    assert not errors, f"concurrent retries raised: {errors}"
+    assert len(results) == 4
+    run_ids = {run_id for run_id, _ in results.values()}
+    assert len(run_ids) == 1, f"concurrent same-key retries must converge, got {run_ids}"
+    run_id = next(iter(run_ids))
+    store = RunStore(root, namespace="test")
+    record = store.get(run_id, private=True)
+    assert record["spec"]["prompt"] == "concurrent brief"
+    trail = store.audit_trail(run_id)
+    creates = [e for e in trail if e["action"] == "run.create"]
+    assert len(creates) == 1, f"exactly one durable acceptance, got {len(creates)}"

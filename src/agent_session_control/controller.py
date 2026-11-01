@@ -128,6 +128,53 @@ def _mcp_fingerprint(mcp_servers: Any) -> dict:
     return {"names": sorted(names), "digest": hashlib.sha256(canonical.encode("utf-8")).hexdigest()}
 
 
+# Caller-intent identity excludes asynchronously learned binding.
+#
+# ``history_path`` is learned after acceptance (exact preassigned scan,
+# wire-marker evidence, host claim) and then persisted into the session row.
+# A retry built after binding therefore carries a different full spec digest
+# than the originally accepted ``None`` record. The store keeps comparing the
+# full spec digest globally; the controller converges here by comparing caller
+# intent (everything except the learned binding) and reusing the stored run.
+_INTENT_EXCLUDE_KEYS = frozenset({"history_path"})
+
+
+def _start_intent(spec: Any) -> dict:
+    """Caller-intent projection of a submit spec: everything but learned binding."""
+    if not isinstance(spec, dict):
+        return {}
+    return {key: value for key, value in spec.items() if key not in _INTENT_EXCLUDE_KEYS}
+
+
+def _lookup_existing_run(run_store: Any, key: str) -> tuple[str | None, dict | None]:
+    """Return ``(run_id, stored_spec)`` for an idempotency key without creating.
+
+    Uses only the public store read contract: ``find(key)`` locates the
+    winner, ``get(run_id, private=True)`` carries the stored spec. Returns
+    ``(None, None)`` when the key is unknown or the stored spec is unreadable;
+    the caller then re-raises the original conflict instead of guessing.
+    """
+    try:
+        found = run_store.find(key)
+    except Exception:
+        return None, None
+    if not isinstance(found, dict):
+        return None, None
+    run_id = found.get("run_id")
+    if not run_id or not isinstance(run_id, str):
+        return None, None
+    try:
+        record = run_store.get(run_id, private=True)
+    except Exception:
+        return None, None
+    if not isinstance(record, dict):
+        return None, None
+    spec = record.get("spec")
+    if not isinstance(spec, dict):
+        return None, None
+    return run_id, spec
+
+
 @dataclass
 class HostHooks:
     """Host-injectable preparation around terminal hosting.
@@ -1093,7 +1140,20 @@ class LocalController:
         try:
             data, created = self.run_store.create(actor, key, spec, initial)
         except Exception as exc:
-            raise self._store_error(exc, "start_turn") from exc
+            if getattr(exc, "code", None) != "idempotency_conflict":
+                raise self._store_error(exc, "start_turn") from exc
+            # The store compares the full spec digest, which includes the
+            # asynchronously learned ``history_path`` (None at first accept,
+            # a path after binding). Identical caller intent must converge:
+            # compare intent without the learned binding, reusing the stored
+            # run and ensuring supervision. Any other difference re-raises.
+            existing_id, stored_spec = _lookup_existing_run(self.run_store, key)
+            if existing_id is None or not isinstance(stored_spec, dict):
+                raise self._store_error(exc, "start_turn") from exc
+            if _start_intent(stored_spec) != _start_intent(spec):
+                raise self._store_error(exc, "start_turn") from exc
+            self._ensure_supervision(existing_id, actor)
+            return existing_id
         run_id = data["run_id"]
         if created:
             self._launch_supervisor(run_id, actor)
@@ -1265,14 +1325,19 @@ class LocalController:
                 raise self._store_error(exc, "watch") from exc
             for item in page["events"]:
                 cursor = item["seq"]
+                evidence = item.get("evidence", "unknown")
+                if isinstance(evidence, dict):
+                    evidence = str(evidence.get("origin", "unknown") or "unknown")
+                elif not isinstance(evidence, str):
+                    evidence = "unknown"
                 yield ControlEvent(
                     seq=item["seq"],
                     kind=item.get("kind", "state"),
                     session_id=item.get("session_ref", ""),
                     run_id=run_id,
                     data=item,
-                    evidence=item.get("evidence", "unknown"),
-                    generation=item.get("generation", ""),
+                    evidence=evidence,
+                    generation=str(item.get("generation", "") or ""),
                 )
             try:
                 record = self.run_store.get(run_id)
@@ -1495,11 +1560,13 @@ class LocalController:
             snapshot = self.history.load_snapshot({"path": row["history_path"], "source": row["runtime"]})
         except Exception as exc:
             raise ControlError(getattr(exc, "code", "history_unavailable"), getattr(exc, "message", str(exc))) from exc
-        from agent_session_control.history import compact_event
+        from agent_session_control.history import project_event
 
         out: list[Any] = []
         for index, event in enumerate(snapshot.events):
-            body = compact_event(event)
+            body = project_event(event, text_limit=None)
+            if "seq" in body:
+                body["native_seq"] = body["seq"]
             evidence = getattr(getattr(event, "evidence", None), "origin", "unknown") or "unknown"
             out.append(
                 ControlEvent(

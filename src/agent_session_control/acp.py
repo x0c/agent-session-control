@@ -21,17 +21,22 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 import sys
 import uuid
 from typing import Any
 
+from agent_session_control import __version__ as _CANONICAL_VERSION
 from agent_session_control.errors import ControlError
 
 log = logging.getLogger("agent_session_control.acp")
 
 AGENT_NAME = "agent-session-control"
-AGENT_VERSION_FALLBACK = "0.1.0"
+#: Fallback agent version bound to the canonical package version; used only
+#: when installed distribution metadata is unavailable. Kept as a public
+#: constant for compatibility.
+AGENT_VERSION_FALLBACK = _CANONICAL_VERSION
 
 #: Canonical baseline block type on the wire. The legacy neutral ``resource``
 #: alias is only a normalization fallback, never confused with ACP embedded
@@ -57,6 +62,10 @@ _PASSTHROUGH_STOP = frozenset({"end_turn", "max_tokens", "max_turn_requests", "r
 #: How long ``session/close`` waits for a tracked run to settle before it
 #: reports the (successful) release with an unconfirmed cancellation flag.
 CLOSE_CONFIRM_TIMEOUT = 10.0
+
+#: Official stable v1 MCP baseline reference: every served agent MUST support
+#: the stdio transport; HTTP/SSE are optional. Used in gate errors only.
+MCP_BASELINE_URL = "https://agentclientprotocol.com/protocol/v1/session-setup#mcp-servers"
 
 #: Compact summaries append this marker; stripping it recovers the true
 #: prefix for tail reconciliation against the terminal result.
@@ -312,7 +321,151 @@ def _event_text(data: dict) -> str | None:
     return text if isinstance(text, str) and text else None
 
 
+#: Tool result states the controller reports; anything else stays in progress.
 _TOOL_RESULT_STATUS = {"ok": "completed", "error": "failed", "unknown": "in_progress"}
+
+
+class _UnmappablePayloadError(Exception):
+    """A tool raw payload with no faithful plain-JSON shape (sanitized).
+
+    Carries only the Python type name and the wire field — never payload
+    values — so outward mapping errors cannot leak secrets or backend prose.
+    """
+
+    def __init__(self, type_name: str, field: str) -> None:
+        super().__init__(f"unmappable {field} payload of type {type_name}")
+        self.type_name = type_name
+        self.field = field
+
+
+def _jsonable(value: Any, _seen: set[int] | None = None) -> Any:
+    """Validate-and-pass-through for plain-JSON tool input/output records.
+
+    Real store bodies arrive as plain JSON (the store JSON-serializes on
+    append, the engine projects native dataclasses before appending), so the
+    adapter never projects engine types itself and imposes no depth cap:
+    representable JSON of any depth passes through fully, never truncated.
+    Anything without a faithful plain-data shape — non-str dict keys,
+    nonfinite floats, cycles, or non-JSON types (sets, bytes, dataclasses,
+    namespaces, …) — raises :class:`_UnmappablePayloadError` with a sanitized
+    type-only identity so the caller fails instead of corrupting data.
+    """
+    if value is None or isinstance(value, (bool, str)):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise _UnmappablePayloadError(type(value).__name__, "float")
+        return value
+    if isinstance(value, dict):
+        seen = _seen if _seen is not None else set()
+        ident = id(value)
+        if ident in seen:
+            raise _UnmappablePayloadError("cycle", "container")
+        seen.add(ident)
+        try:
+            out: dict[str, Any] = {}
+            for key, item in value.items():
+                if not isinstance(key, str):
+                    raise _UnmappablePayloadError(type(key).__name__, "dict-key")
+                out[key] = _jsonable(item, seen)
+            return out
+        finally:
+            seen.discard(ident)
+    if isinstance(value, (list, tuple)):
+        seen = _seen if _seen is not None else set()
+        ident = id(value)
+        if ident in seen:
+            raise _UnmappablePayloadError("cycle", "container")
+        seen.add(ident)
+        try:
+            return [_jsonable(item, seen) for item in value]
+        finally:
+            seen.discard(ident)
+    raise _UnmappablePayloadError(type(value).__name__, "value")
+
+
+def _raw_input_of(data: dict) -> Any:
+    """Native tool input as a JSON-safe value, or None when unrecorded.
+
+    Raises a sanitized ``RequestError`` (-32603, type/field identity only)
+    for present-but-unmappable payloads — including values the SDK would
+    otherwise salvage to None — so live and replay paths fail instead of
+    succeeding after data loss.
+    """
+    for key in ("raw_input", "rawInput"):
+        if data.get(key) is not None:
+            try:
+                return _jsonable(data.get(key))
+            except _UnmappablePayloadError as exc:
+                raise _sdk().RequestError.internal_error(
+                    {
+                        "message": "Cannot faithfully map tool raw input; refusing lossy delivery.",
+                        "field": "rawInput",
+                        "payloadType": exc.type_name,
+                    }
+                ) from None
+            except RecursionError:
+                raise _sdk().RequestError.internal_error(
+                    {
+                        "message": "Cannot faithfully map tool raw input; refusing lossy delivery.",
+                        "field": "rawInput",
+                        "payloadType": "recursion",
+                    }
+                ) from None
+    return None
+
+
+def _raw_output_of(data: dict) -> Any:
+    """Native tool output as a JSON-safe value, or None when unrecorded.
+
+    Raises a sanitized ``RequestError`` (-32603, type/field identity only)
+    for present-but-unmappable payloads — including values the SDK would
+    otherwise salvage to None — so live and replay paths fail instead of
+    succeeding after data loss.
+    """
+    for key in ("raw_output", "rawOutput"):
+        if data.get(key) is not None:
+            try:
+                return _jsonable(data.get(key))
+            except _UnmappablePayloadError as exc:
+                raise _sdk().RequestError.internal_error(
+                    {
+                        "message": "Cannot faithfully map tool raw output; refusing lossy delivery.",
+                        "field": "rawOutput",
+                        "payloadType": exc.type_name,
+                    }
+                ) from None
+            except RecursionError:
+                raise _sdk().RequestError.internal_error(
+                    {
+                        "message": "Cannot faithfully map tool raw output; refusing lossy delivery.",
+                        "field": "rawOutput",
+                        "payloadType": "recursion",
+                    }
+                ) from None
+    return None
+
+
+def _error_text(data: dict) -> str | None:
+    """Native error kind/message rendered as plain text, if available."""
+    err = data.get("error")
+    if err is None:
+        return None
+    if isinstance(err, str):
+        return err or None
+    if isinstance(err, dict):
+        kind, message = err.get("kind"), err.get("message")
+    elif isinstance(err, object) and (hasattr(err, "kind") or hasattr(err, "message")):
+        kind, message = getattr(err, "kind", None), getattr(err, "message", None)
+    else:
+        return None
+    kind = kind if isinstance(kind, str) and kind.strip() else ""
+    message = message if isinstance(message, str) and message.strip() else ""
+    if kind and message:
+        return f"{kind}: {message}"
+    return message or kind or None
 
 
 class ControlAgent:
@@ -803,6 +956,10 @@ class ControlAgent:
         raw_result = data.get("result")
         if isinstance(raw_result, dict):
             raw_status = raw_result.get("status")
+        elif isinstance(raw_result, str):
+            raw_status = raw_result
+        elif raw_result is not None:
+            raw_status = getattr(raw_result, "status", raw_result)
         else:
             raw_status = raw_result
         status = _TOOL_RESULT_STATUS.get(str(raw_status or ""), "in_progress")
@@ -812,6 +969,14 @@ class ControlAgent:
         text = _event_text(data)
         if text:
             content = [sdk.tool_content(sdk.text_block(_clean_text(text)))]
+        else:
+            # Raw-only bodies carry no text: the native error kind/message is
+            # the available detail and travels as a text block (the schema's
+            # channel for human-readable tool content). Never invented: only
+            # emitted when the backend actually recorded an error.
+            error_detail = _error_text(data)
+            if error_detail:
+                content = [sdk.tool_content(sdk.text_block(_clean_text(error_detail)))]
         return status, content
 
     async def _stream_tool_call(
@@ -820,24 +985,41 @@ class ControlAgent:
         schema = _schema()
         call_id = data.get("call_id") or f"{run_id}:{key[0]}:{key[1]}"
         name = data.get("tool") or data.get("name") or "tool"
-        try:
-            if call_id not in seen_tools:
-                seen_tools.add(call_id)
-                start = schema.ToolCallStart(session_update="tool_call", tool_call_id=str(call_id), title=str(name))
+        # Mapping happens before any delivery: an unmappable raw payload
+        # raises RequestError here and fails the turn instead of succeeding
+        # after data loss (delivery-only try blocks below never swallow it).
+        raw_in, raw_out = _raw_input_of(data), _raw_output_of(data)
+        if call_id not in seen_tools:
+            seen_tools.add(call_id)
+            start = schema.ToolCallStart(
+                session_update="tool_call",
+                tool_call_id=str(call_id),
+                title=str(name),
+                raw_input=raw_in,
+                raw_output=raw_out,
+            )
+            try:
                 await self._conn.session_update(session_id=session_id, update=start)
-                stats["tool"] += 1
-            if data.get("result") is not None or data.get("error") is not None:
-                status, content = self._tool_status(data)
-                progress = schema.ToolCallProgress(
-                    session_update="tool_call_update",
-                    tool_call_id=str(call_id),
-                    status=status,
-                    content=content or None,
-                )
+            except Exception:
+                log.warning("tool update delivery failed", exc_info=True)
+                return
+            stats["tool"] += 1
+        if data.get("result") is not None or data.get("error") is not None:
+            status, content = self._tool_status(data)
+            progress = schema.ToolCallProgress(
+                session_update="tool_call_update",
+                tool_call_id=str(call_id),
+                status=status,
+                content=content or None,
+                raw_input=raw_in,
+                raw_output=raw_out,
+            )
+            try:
                 await self._conn.session_update(session_id=session_id, update=progress)
-                stats["tool"] += 1
-        except Exception:
-            log.warning("tool update delivery failed", exc_info=True)
+            except Exception:
+                log.warning("tool update delivery failed", exc_info=True)
+                return
+            stats["tool"] += 1
 
     async def _stream_tool_result(
         self, session_id: str, run_id: str, key: tuple, data: dict, seen_tools: set[str], stats: dict
@@ -850,23 +1032,40 @@ class ControlAgent:
         schema = _schema()
         call_id = data.get("call_id") or f"{run_id}:{key[0]}:{key[1]}"
         name = data.get("tool") or data.get("name") or "tool"
-        try:
-            if call_id not in seen_tools:
-                seen_tools.add(call_id)
-                start = schema.ToolCallStart(session_update="tool_call", tool_call_id=str(call_id), title=str(name))
-                await self._conn.session_update(session_id=session_id, update=start)
-                stats["tool"] += 1
-            status, content = self._tool_status(data)
-            progress = schema.ToolCallProgress(
-                session_update="tool_call_update",
+        # Mapping happens before any delivery: an unmappable raw payload
+        # raises RequestError here and fails the turn instead of succeeding
+        # after data loss (delivery-only try blocks below never swallow it).
+        raw_in, raw_out = _raw_input_of(data), _raw_output_of(data)
+        status, content = self._tool_status(data)
+        if call_id not in seen_tools:
+            seen_tools.add(call_id)
+            start = schema.ToolCallStart(
+                session_update="tool_call",
                 tool_call_id=str(call_id),
-                status=status,
-                content=content or None,
+                title=str(name),
+                raw_input=raw_in,
+                raw_output=raw_out,
             )
-            await self._conn.session_update(session_id=session_id, update=progress)
+            try:
+                await self._conn.session_update(session_id=session_id, update=start)
+            except Exception:
+                log.warning("tool result delivery failed", exc_info=True)
+                return
             stats["tool"] += 1
+        progress = schema.ToolCallProgress(
+            session_update="tool_call_update",
+            tool_call_id=str(call_id),
+            status=status,
+            content=content or None,
+            raw_input=raw_in,
+            raw_output=raw_out,
+        )
+        try:
+            await self._conn.session_update(session_id=session_id, update=progress)
         except Exception:
             log.warning("tool result delivery failed", exc_info=True)
+            return
+        stats["tool"] += 1
 
     async def _announce_terminal(self, session_id: str, run_id: str, result: Any, stats: dict) -> None:
         """Surface terminal evidence the live stream could not carry.
@@ -1042,19 +1241,29 @@ class ControlAgent:
             elif inner == "tool_call":
                 call_id = data.get("call_id") or f"replay:{generation}:{seq}"
                 update = schema.ToolCallStart(
-                    session_update="tool_call", tool_call_id=str(call_id), title=str(data.get("tool") or "tool")
+                    session_update="tool_call",
+                    tool_call_id=str(call_id),
+                    title=str(data.get("tool") or data.get("name") or "tool"),
+                    raw_input=_raw_input_of(data),
+                    raw_output=_raw_output_of(data),
                 )
             elif inner == "tool_result":
                 call_id = data.get("call_id") or f"replay:{generation}:{seq}"
                 status, content = self._tool_status(data)
                 start = schema.ToolCallStart(
-                    session_update="tool_call", tool_call_id=str(call_id), title=str(data.get("tool") or "tool")
+                    session_update="tool_call",
+                    tool_call_id=str(call_id),
+                    title=str(data.get("tool") or data.get("name") or "tool"),
+                    raw_input=_raw_input_of(data),
+                    raw_output=_raw_output_of(data),
                 )
                 progress = schema.ToolCallProgress(
                     session_update="tool_call_update",
                     tool_call_id=str(call_id),
                     status=status,
                     content=content or None,
+                    raw_input=_raw_input_of(data),
+                    raw_output=_raw_output_of(data),
                 )
                 try:
                     await self._conn.session_update(session_id=session_id, update=start)
@@ -1112,9 +1321,60 @@ async def serve_stdio(controller: Any, runtime: str, *, actor: str = "acp-client
     beyond unblocking the two stable routes. Wire payloads are validated in
     tests against the released stable schema, not the SDK's draft surface.
     """
+    require_stdio_mcp_baseline(controller, runtime)
     sdk = _sdk()
     agent = ControlAgent(controller, runtime, actor=actor)
     await sdk.run_agent(agent, use_unstable_protocol=True)
+
+
+def require_stdio_mcp_baseline(controller: Any, runtime: str) -> None:
+    """Refuse to serve a runtime/controller without the stdio MCP baseline.
+
+    Stable v1 requires every agent to support stdio MCP servers
+    (``session/new``/``load``/``resume`` carry ``mcpServers``); HTTP/SSE are
+    optional. The selected backend proves the baseline with an explicit
+    ``capabilities(runtime)["mcp"] == "supported"`` — never a union of other
+    runtimes' strengths and never a new invented flag. Anything else
+    (``"unsupported"``, missing, failed probe, unknown runtime) fails here,
+    before the SDK owns stdout, so a refused child prints no protocol bytes.
+
+    Outward errors carry stable codes/types only: a failed probe reports the
+    backend failure kind (our ``ControlError`` code or the exception type
+    name), never backend prose or values, and the reported baseline value is
+    never echoed. The selected runtime id is caller-supplied safe identity
+    and is kept. The original exception chain is suppressed so no backend
+    traceback travels outward.
+
+    Direct ``ControlAgent`` use is unaffected: handlers stay available for
+    SDK/CLI control paths and only the serve entry is gated.
+    """
+    try:
+        caps = controller.capabilities(runtime)
+    except ControlError as exc:
+        raise ControlError(
+            "unsupported",
+            f"Runtime {runtime!r} cannot be served over ACP: the stdio MCP baseline "
+            f"could not be verified (backend probe refused: {exc.code}). {MCP_BASELINE_URL}",
+            2,
+            hint="Serve a baseline-conformant runtime (claude, codex, opencode) instead.",
+        ) from None
+    except Exception as exc:
+        raise ControlError(
+            "unsupported",
+            f"Runtime {runtime!r} cannot be served over ACP: the stdio MCP baseline "
+            f"probe failed (unverified backend: {type(exc).__name__}). {MCP_BASELINE_URL}",
+            2,
+            hint="Serve a baseline-conformant runtime (claude, codex, opencode) instead.",
+        ) from None
+    if not isinstance(caps, dict) or caps.get("mcp") != "supported":
+        raise ControlError(
+            "unsupported",
+            f"Runtime {runtime!r} cannot be served over ACP: stable v1 requires stdio MCP "
+            f"support, but this runtime/controller reports no stdio MCP baseline. {MCP_BASELINE_URL}",
+            2,
+            hint="Serve a baseline-conformant runtime (claude, codex, opencode) instead; "
+            "direct ControlAgent use for SDK/CLI control is unaffected.",
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1137,5 +1397,18 @@ def main(argv: list[str] | None = None) -> int:
 
     root = Path(args.root).expanduser() if args.root else None
     controller = LocalController(root=root, namespace=args.namespace)
-    asyncio.run(serve_stdio(controller, args.runtime, actor=args.actor))
+    try:
+        require_stdio_mcp_baseline(controller, args.runtime)
+    except ControlError as exc:
+        print(f"acp: {exc.message}", file=sys.stderr)
+        if exc.hint:
+            print(f"acp: hint: {exc.hint}", file=sys.stderr)
+        return exc.exit_code if isinstance(exc.exit_code, int) and 1 <= exc.exit_code <= 6 else 1
+    try:
+        asyncio.run(serve_stdio(controller, args.runtime, actor=args.actor))
+    except ControlError as exc:
+        print(f"acp: {exc.message}", file=sys.stderr)
+        if exc.hint:
+            print(f"acp: hint: {exc.hint}", file=sys.stderr)
+        return exc.exit_code if isinstance(exc.exit_code, int) and 1 <= exc.exit_code <= 6 else 1
     return 0

@@ -28,6 +28,27 @@ from agent_session_control import cli as cli_mod  # noqa: E402
 EXE = [sys.executable, "-m", "agent_session_control"]
 
 
+def _repo_src() -> str:
+    """Repository sources for subprocess isolation.
+
+    Subprocess CLI probes must exercise the working-tree ``src/`` (plus the
+    test interpreter's environment), never a stale installed ``0.1.0``
+    artifact. ``child_env`` already does this for ACP spawns; ``run_cli``
+    and the direct-subprocess probes below need the same guarantee because
+    the ``.venv`` editable install alone does not prove it under other
+    interpreters.
+    """
+
+    return str(Path(__file__).parent.parent / "src")
+
+
+def _env_with_src(base: dict | None = None) -> dict:
+    env = dict(base if base is not None else os.environ)
+    src = _repo_src()
+    env["PYTHONPATH"] = src + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    return env
+
+
 class TClient:
     """Minimal official-SDK client: records session/update notifications."""
 
@@ -62,7 +83,7 @@ def any_client(client: TClient) -> Any:
 def run_cli(
     *argv: str, cwd: Path | None = None, env_extra: dict | None = None, stdin_text: str | None = None
 ) -> subprocess.CompletedProcess:
-    env = dict(os.environ)
+    env = _env_with_src()
     env["XDG_CONFIG_HOME"] = str(Path(os.environ.get("XDG_CONFIG_HOME_TMP", "/tmp")) / "asc-cli-test")
     env["NO_COLOR"] = "1"
     if env_extra:
@@ -90,6 +111,31 @@ def test_version_envelope_offline() -> None:
     assert body["ok"] is True and body["error"] is None
     assert body["data"]["package"] == "agent-session-control"
     assert set(body) == {"ok", "data", "error", "meta"}
+
+
+def test_pkg_version_falls_back_to_canonical_without_optional_deps(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fallback reports the canonical version and loads nothing new.
+
+    Simulates an unpackaged tree (``PackageNotFoundError`` from
+    ``importlib.metadata``): ``_pkg_version()`` must return the canonical
+    ``agent_session_control.__version__`` (currently 0.1.1, never a
+    divergent literal) without importing optional dependencies. Runs
+    in-process and offline: no subprocess, no model, no network.
+    """
+    import importlib.metadata
+
+    from agent_session_control import __version__ as canonical
+
+    assert canonical == "0.1.1"
+
+    def _missing(_name: str) -> str:
+        raise importlib.metadata.PackageNotFoundError("not installed")
+
+    monkeypatch.setattr(importlib.metadata, "version", _missing)
+    before = set(sys.modules)
+    assert cli_mod._pkg_version() == canonical
+    assert cli_mod._pkg_version() != "0.1.0"
+    assert set(sys.modules) == before, "version fallback must not load optional dependencies"
 
 
 def test_failure_envelope_and_usage_exit() -> None:
@@ -225,7 +271,8 @@ def test_prompt_file_stdin_and_validation(tmp_path: Path) -> None:
 
 
 def test_stdout_stderr_separation() -> None:
-    proc = subprocess.run([*EXE, "version", "--json"], capture_output=True, text=True, timeout=60)
+    env = _env_with_src()
+    proc = subprocess.run([*EXE, "version", "--json"], capture_output=True, text=True, timeout=60, env=env)
     assert proc.returncode == 0
     json.loads(proc.stdout)  # parses with stderr discarded
     assert proc.stderr == ""
@@ -234,7 +281,7 @@ def test_stdout_stderr_separation() -> None:
 def test_human_readable_default_without_json() -> None:
     import pty
 
-    env = dict(os.environ)
+    env = _env_with_src()
     env["XDG_CONFIG_HOME"] = "/tmp/asc-cli-test"
     env.pop("NO_COLOR", None)
     master, slave = pty.openpty()
@@ -374,15 +421,17 @@ def test_submit_unknown_session_is_not_found_exit_3(capsys: pytest.CaptureFixtur
 def test_packaged_acp_entry_handshake_only(tmp_path: Path) -> None:
     """Production ``acp`` entry over real engine: initialize + list only.
 
-    Never creates a session (that would host a terminal). Proves the packaged
-    wiring, protocol-only stdout and offline capability truthfulness.
+    Uses the MCP-baseline-supported ``codex`` runtime (stable v1 requires
+    stdio MCP; ``cursor``/``pi`` report ``mcp: unsupported`` and are
+    correctly refused by the serve gate before the SDK owns stdout -- see
+    the explicit-refusal test below). Never creates a session (that would
+    host a terminal). Proves the packaged wiring, protocol-only stdout
+    and offline capability truthfulness against current ``src/``.
     """
 
     async def go() -> None:
         from acp import PROTOCOL_VERSION, RequestError, spawn_agent_process
 
-        proj = tmp_path / "proj"
-        proj.mkdir()
         client = TClient()
         env = child_env()
         async with spawn_agent_process(
@@ -392,7 +441,7 @@ def test_packaged_acp_entry_handshake_only(tmp_path: Path) -> None:
             "agent_session_control",
             "acp",
             "--runtime",
-            "cursor",
+            "codex",
             "--root",
             str(tmp_path / "root"),
             "--namespace",
@@ -414,37 +463,52 @@ def test_packaged_acp_entry_handshake_only(tmp_path: Path) -> None:
             assert exc.value.code == -32002
             # Reads never create storage.
             assert not (tmp_path / "root").exists()
-            # The cursor profile has no per-session MCP support: honest
-            # refusal that leaks no server values, before anything launches.
-            with pytest.raises(RequestError) as exc:
-                await asyncio.wait_for(
-                    conn.new_session(
-                        str(proj),
-                        mcp_servers=[
-                            {
-                                "name": "fs",
-                                "command": "/usr/bin/mcp",
-                                "args": [],
-                                "env": [{"name": "TOKEN", "value": "sekrit"}],
-                            }
-                        ],
-                    ),
-                    30,
-                )
-            assert exc.value.code == -32602
-            assert "sekrit" not in json.dumps(exc.value.data or {})
-            # The refused create records nothing hosted: any registry row left
-            # behind must have no pane. (Engine internals; guards "refuse
-            # before launching", not the registry format itself.)
-            import sqlite3 as _sqlite3
-
-            for db in (tmp_path / "root").rglob("*.sqlite3"):
-                conn = _sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-                try:
-                    panes = conn.execute("SELECT pane, status FROM sessions").fetchall()
-                finally:
-                    conn.close()
-                assert all(pane is None for pane, _ in panes), panes
         assert process.returncode == 0
+
+    asyncio.run(go())
+
+
+@pytest.mark.parametrize("runtime", ["cursor", "pi"])
+def test_packaged_acp_entry_refuses_non_baseline_runtimes(tmp_path: Path, runtime: str) -> None:
+    """Packaged ``acp`` entry refuses ``cursor``/``pi`` before serving.
+
+    The stdio MCP baseline gate (``require_stdio_mcp_baseline``) rejects
+    runtimes whose ``capabilities(runtime)["mcp"] != "supported"`` before
+    the SDK owns stdout. The child must exit 2 with protocol-free stdout,
+    a stderr naming the runtime and the stdio baseline, and no storage.
+    The gate itself is never weakened here; this only pins the refusal.
+    """
+
+    async def go() -> None:
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "agent_session_control",
+            "acp",
+            "--runtime",
+            runtime,
+            "--root",
+            str(tmp_path / "root"),
+            "--namespace",
+            "t",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=child_env(),
+        )
+        assert process.stdin and process.stdout and process.stderr
+        process.stdin.write(b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}\n')
+        await process.stdin.drain()
+        process.stdin.close()
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), 60)
+        except Exception:
+            process.kill()
+            raise
+        assert process.returncode == 2, f"{runtime}: {stdout!r} {stderr!r}"
+        assert stdout == b"", f"refused serve must emit no protocol bytes, got {stdout[:200]!r}"
+        text = (stderr or b"").decode()
+        assert runtime in text and "stdio" in text.lower(), text[-2000:]
+        assert not (tmp_path / "root").exists(), "refused serve must not create storage"
 
     asyncio.run(go())

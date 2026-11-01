@@ -33,6 +33,8 @@ from dataclasses import dataclass
 
 _CALL_TIMEOUT = 10.0
 _CREATE_TIMEOUT = 30.0
+_ENV_RDV_TIMEOUT = 15.0
+_ENV_RDV_MAX_BYTES = 2_000_000
 _READY_POLL = 0.2
 _COMPOSER_POLL = 0.15
 _PASTE_VISIBLE_POLLS = 10
@@ -120,6 +122,120 @@ def plain_text(raw: str | None) -> str:
     return _ANSI_RE.sub("", raw)
 
 
+# Private env rendezvous launcher (no secrets on tmux argv).
+#
+# ``new-session -e NAME=value`` and ``set-environment value`` both carry the
+# value in the tmux server argv (visible via process listing), so secrets
+# never travel there. Instead the pane starts a tiny stdlib launcher whose
+# argv carries only a random single-use socket path plus the target argv;
+# the launcher fetches the env mapping over the socket and execs the target
+# with ``os.execvpe`` (argv-based, no shell, quoting/Unicode/newlines
+# preserved). The socket directory is 0700, single-use, and removed on every
+# path; the env never touches server-global state, sibling sessions, files
+# holding secrets, diagnostics or stored records. Same-user namespaces
+# prevent mistakes, not hostile-tenant isolation; caller-supplied secret args
+# in ``argv`` itself remain visible via process listing by design.
+_ENV_LAUNCHER_PY = (
+    "import json,os,socket,sys,time\n"
+    "def _fail(m):\n"
+    " try:\n"
+    "  sys.stderr.write('env rendezvous failed: '+m+'\\n')\n"
+    " except Exception:\n"
+    "  pass\n"
+    " os._exit(127)\n"
+    "sp=sys.argv[1] if len(sys.argv)>1 else ''\n"
+    "tg=sys.argv[2:] if len(sys.argv)>2 else []\n"
+    "if not sp or not tg:\n"
+    " _fail('usage')\n"
+    "dl=time.monotonic()+10.0\n"
+    "c=None\n"
+    "while True:\n"
+    " try:\n"
+    "  s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)\n"
+    "  s.settimeout(2.0)\n"
+    "  s.connect(sp)\n"
+    "  c=s\n"
+    "  break\n"
+    " except OSError:\n"
+    "  try:\n"
+    "   s.close()\n"
+    "  except Exception:\n"
+    "   pass\n"
+    "  if time.monotonic()>=dl:\n"
+    "   _fail('connect')\n"
+    "  time.sleep(0.05)\n"
+    "try:\n"
+    " c.settimeout(10.0)\n"
+    " ps=[]\n"
+    " tt=0\n"
+    " while True:\n"
+    "  ch=c.recv(65536)\n"
+    "  if not ch:\n"
+    "   break\n"
+    "  ps.append(ch)\n"
+    "  tt+=len(ch)\n"
+    "  if tt>2000000:\n"
+    "   _fail('too large')\n"
+    " rw=b''.join(ps)\n"
+    " try:\n"
+    "  ex=json.loads(rw.decode('utf-8'))\n"
+    " except Exception:\n"
+    "  _fail('decode')\n"
+    " if not isinstance(ex,dict):\n"
+    "  _fail('shape')\n"
+    " for k,v in ex.items():\n"
+    "  if not isinstance(k,str) or not isinstance(v,str):\n"
+    "   _fail('types')\n"
+    " en=dict(os.environ)\n"
+    " for k,v in ex.items():\n"
+    "  en[k]=v\n"
+    " try:\n"
+    "  c.close()\n"
+    " except Exception:\n"
+    "  pass\n"
+    " os.execvpe(tg[0],list(tg),en)\n"
+    "except SystemExit:\n"
+    " raise\n"
+    "except BaseException:\n"
+    " _fail('exec')\n"
+)
+
+
+def _validate_private_env(env: dict | None) -> dict[str, str]:
+    """Copy ``env`` while refusing values that cannot be delivered privately.
+
+    Never formats values into messages: failures name the problem only.
+    """
+    if not env:
+        return {}
+    cleaned: dict[str, str] = {}
+    for key, value in env.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            raise TmuxError("usage_error", "Refusing to host with a non-string env entry.")
+        if not key or "=" in key or "\x00" in key or "\x00" in value:
+            raise TmuxError("usage_error", "Refusing to host with an invalid env entry.")
+        cleaned[key] = value
+    return cleaned
+
+
+def _serialize_private_env_payload(private_env: dict[str, str]) -> bytes:
+    """Encode the rendezvous payload before any pane/socket exists.
+
+    Preflight runs before ``mkdtemp``/``new-session`` so an oversized or
+    unencodable env never creates (then kills) a pane. Failures name the
+    problem only; values never enter messages, reprs or diagnostics.
+    """
+    import json as _json
+
+    try:
+        payload = _json.dumps(private_env, ensure_ascii=False).encode("utf-8")
+    except (UnicodeEncodeError, TypeError, ValueError):
+        raise TmuxError("usage_error", "Refusing to host an env payload that cannot be encoded privately.") from None
+    if len(payload) > _ENV_RDV_MAX_BYTES:
+        raise TmuxError("usage_error", "Refusing to host an oversized env payload.") from None
+    return payload
+
+
 def _decode_tmux_stderr(raw: object) -> str:
     try:
         if isinstance(raw, bytes):
@@ -130,6 +246,43 @@ def _decode_tmux_stderr(raw: object) -> str:
     except Exception:
         pass
     return ""
+
+
+def _parse_creation_witness(proc: subprocess.CompletedProcess) -> tuple[str, str] | None:
+    """Parse the atomic creation identity from ``new-session -P -F`` output.
+
+    The ``-P -F "#{pane_id}:#{pane_pid}"`` stdout is the ONLY authoritative
+    creation witness: it is returned by the server in the same call that
+    creates the pane, so no replacement can interpose before it. A later
+    by-name ``display-message`` query is only an observation to compare
+    against this witness — never creation proof itself. Unparsable, empty,
+    or forged output yields None (unverifiable; caller must abort without
+    blind-killing by name).
+    """
+    try:
+        raw = proc.stdout
+    except Exception:
+        return None
+    if raw is None:
+        return None
+    if isinstance(raw, bytes):
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+    else:
+        text = str(raw)
+    text = text.strip()
+    if not text or text.count(":") != 1:
+        return None
+    pane_id, _, pane_pid = text.partition(":")
+    pane_id = pane_id.strip()
+    pane_pid = pane_pid.strip()
+    if not pane_id.startswith("%") or not pane_id[1:].isdigit():
+        return None
+    if not pane_pid.isdigit():
+        return None
+    return (pane_id, pane_pid)
 
 
 def tmux_child_env(base: dict | None = None) -> dict:
@@ -436,10 +589,23 @@ class TmuxBackend:
         a foreign record, or a stale record (a replacement process under a
         reused name) raises instead of being adopted. Only a byte-identical
         live instance is ever reused.
+
+        ``env`` travels through a single-use private socket rendezvous, never
+        through tmux ``-e``/``set-environment`` argv, server-global state or
+        secret files. The child stays argv-based (multi-arg shell-command
+        runs directly without a shell) so quoting/Unicode/newlines survive.
         """
         self.require_available()
         if not argv:
             raise TmuxError("usage_error", "Refusing to host an empty argv.")
+        private_env = _validate_private_env(dict(env or {}))
+        target_argv = [str(part) for part in argv]
+        if any("\x00" in part for part in target_argv):
+            raise TmuxError("usage_error", "Refusing to host an argv entry with NUL.")
+        if private_env:
+            # Preflight before any tmux call: oversized/unencodable env never
+            # creates (then kills) a pane and never leaves a rendezvous dir.
+            _serialize_private_env_payload(private_env)
         self.ensure_server()
         ident = ident or self.new_ident()
         pane = pane_name_for(self.namespace, runtime, ident)
@@ -450,12 +616,17 @@ class TmuxBackend:
                     f"pane {pane} is alive but not verifiably owned by this backend; refusing to adopt it",
                 )
             return pane
+        if not private_env:
+            return self._host_direct(pane, target_argv, runtime=runtime, cwd=cwd, ident=ident)
+        return self._host_with_private_env(pane, target_argv, private_env, runtime=runtime, cwd=cwd, ident=ident)
+
+    def _base_new_session_cmd(self, pane: str, *, cwd: str | None) -> list[str]:
         cmd: list[str] = [
             "new-session",
             "-d",
             "-P",
             "-F",
-            "#{pane_id}",
+            "#{pane_id}:#{pane_pid}",
             "-s",
             pane,
             "-x",
@@ -465,36 +636,25 @@ class TmuxBackend:
         ]
         if cwd:
             cmd += ["-c", cwd]
-        for key, value in (env or {}).items():
-            cmd += ["-e", f"{key}={value}"]
-        cmd += ["--", *argv]
-        try:
-            proc = self._run(*cmd, timeout=_CREATE_TIMEOUT)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise TmuxError("launch_failed", f"tmux did not accept the new session: {exc}") from exc
-        if proc.returncode != 0:
-            detail = _decode_tmux_stderr(proc.stderr)
-            if self.liveness(pane) == "alive":
-                if not self.live_owned(pane):
-                    raise TmuxError(
-                        "already_hosted",
-                        f"pane {pane} already exists outside this backend; refusing to adopt it",
-                    )
-                return pane
-            suffix = f": {detail}" if detail else ""
-            raise TmuxError("launch_failed", f"tmux could not create pane {pane}{suffix}")
-        instance = self.current_instance(pane)
-        if instance is None:
-            # Launched but unverifiable: never record a blind claim. Tear the
-            # pane down rather than leaving an unprovable execution behind.
-            try:
-                self._run("kill-session", "-t", pane)
-            except (OSError, subprocess.TimeoutExpired):
-                pass
+        return cmd
+
+    def _finish_launch(self, pane: str, *, runtime: str, ident: str, witness: tuple[str, str] | None = None) -> str:
+        current = self.current_instance(pane)
+        if current is None:
+            # Launched but unverifiable: never record a blind claim and never
+            # blind-kill by session name (that could kill a replacement or
+            # foreign process that reused the name). Report; operator recovers.
             raise TmuxError(
-                "launch_failed", f"pane {pane} launched but its instance identity is unreadable; removed it"
+                "launch_failed", f"pane {pane} launched but its instance identity is unreadable; refusing to adopt it"
             )
-        pane_id, pane_pid = instance
+        if witness is not None and current != witness:
+            # A replacement/foreign process now owns the name: neither adopt
+            # it nor kill it. The failed launch owns nothing.
+            raise TmuxError(
+                "already_hosted",
+                f"pane {pane} changed identity during launch; refusing to adopt or kill the current process",
+            )
+        pane_id, pane_pid = current
         self.registry.record(
             pane,
             {
@@ -509,6 +669,191 @@ class TmuxBackend:
             },
         )
         return pane
+
+    def _cleanup_exact(self, pane: str, witness: tuple[str, str] | None) -> bool:
+        """Best-effort kill of exactly the witnessed instance, nothing else.
+
+        Re-queries the live instance and kills only when it still equals the
+        creation witness (same pane_id AND pid). A replacement/foreign
+        process, an unreadable instance, or a missing witness is left alone.
+        The kill targets the exact ``pane_id`` (``kill-pane``), never the
+        reusable session name, so a name-reuse race cannot take out the wrong
+        session. Returns True only when the named session reads dead after.
+        """
+        if witness is None:
+            return False
+        pane_id, pane_pid = witness
+        if not pane_id or not pane_pid:
+            return False
+        try:
+            current = self.current_instance(pane)
+        except Exception:
+            return False
+        if current != witness:
+            return False
+        try:
+            self._run("kill-pane", "-t", pane_id)
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        try:
+            return self.liveness(pane) == "dead"
+        except Exception:
+            return False
+
+    def _host_direct(self, pane: str, target_argv: list[str], *, runtime: str, cwd: str | None, ident: str) -> str:
+        cmd = self._base_new_session_cmd(pane, cwd=cwd)
+        cmd += ["--", *target_argv]
+        try:
+            proc = self._run(*cmd, timeout=_CREATE_TIMEOUT)
+        except (OSError, subprocess.TimeoutExpired):
+            raise TmuxError("launch_failed", "tmux did not accept the new session") from None
+        if proc.returncode != 0:
+            detail = _decode_tmux_stderr(proc.stderr)
+            if self.liveness(pane) == "alive":
+                if not self.live_owned(pane):
+                    raise TmuxError(
+                        "already_hosted",
+                        f"pane {pane} already exists outside this backend; refusing to adopt it",
+                    )
+                return pane
+            suffix = f": {detail}" if detail else ""
+            raise TmuxError("launch_failed", f"tmux could not create pane {pane}{suffix}")
+        witness = _parse_creation_witness(proc)
+        if witness is None:
+            # Atomic creation output unreadable/forged: never fall back to a
+            # by-name post-launch query as creation proof, and never
+            # blind-kill by name. Report; operator recovers.
+            raise TmuxError("launch_failed", f"pane {pane} launched but its instance identity is unreadable") from None
+        return self._finish_launch(pane, runtime=runtime, ident=ident, witness=witness)
+
+    def _host_with_private_env(
+        self,
+        pane: str,
+        target_argv: list[str],
+        private_env: dict[str, str],
+        *,
+        runtime: str,
+        cwd: str | None,
+        ident: str,
+    ) -> str:
+        """Launch via a single-use Unix-socket rendezvous carrying ``private_env``.
+
+        The tmux argv carries only the socket path and the target argv; env
+        values travel over the socket as UTF-8 JSON, then the launcher execs
+        the target. The rendezvous directory is 0700, the socket is unlinked
+        on every path. The payload is serialized and size-checked BEFORE any
+        pane/socket exists, so an oversized/unencodable env never creates an
+        orphan. The live identity is compared against the atomic witness
+        BEFORE the rendezvous accept and AGAIN after accept immediately
+        before sending: a replacement is never handed secrets. Delivery
+        failures clean up only the exact witnessed instance
+        (same pane_id AND pid); a replacement/foreign process under a reused
+        name is never killed.
+        """
+        import socket as _socket
+        import sys as _sys
+        import tempfile as _tempfile
+
+        payload = _serialize_private_env_payload(private_env)
+        rdv_dir = _tempfile.mkdtemp(prefix="asc-env-", dir="/tmp")
+        try:
+            os.chmod(rdv_dir, 0o700)
+        except OSError:
+            pass
+        sock_path = os.path.join(rdv_dir, "sock")
+        listener: _socket.socket | None = None
+        try:
+            listener = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+            listener.bind(sock_path)
+            listener.listen(1)
+            listener.settimeout(_ENV_RDV_TIMEOUT)
+            try:
+                os.chmod(sock_path, 0o600)
+            except OSError:
+                pass
+            launcher: list[str] = [
+                _sys.executable or "python3",
+                "-c",
+                _ENV_LAUNCHER_PY,
+                sock_path,
+                *target_argv,
+            ]
+            cmd = self._base_new_session_cmd(pane, cwd=cwd)
+            cmd += ["--", *launcher]
+            try:
+                proc = self._run(*cmd, timeout=_CREATE_TIMEOUT)
+            except (OSError, subprocess.TimeoutExpired):
+                raise TmuxError("launch_failed", "tmux did not accept the new session") from None
+            if proc.returncode != 0:
+                detail = _decode_tmux_stderr(proc.stderr)
+                if self.liveness(pane) == "alive":
+                    if not self.live_owned(pane):
+                        raise TmuxError(
+                            "already_hosted",
+                            f"pane {pane} already exists outside this backend; refusing to adopt it",
+                        )
+                    return pane
+                suffix = f": {detail}" if detail else ""
+                raise TmuxError("launch_failed", f"tmux could not create pane {pane}{suffix}")
+            witness = _parse_creation_witness(proc)
+            if witness is None:
+                # Atomic creation output unreadable/forged: do not hand secrets
+                # to an unprovable process and do not blind-kill by name (that
+                # could kill a replacement that reused the name).
+                raise TmuxError(
+                    "launch_failed", f"pane {pane} launched but its instance identity is unreadable"
+                ) from None
+            if self.current_instance(pane) != witness:
+                # Replaced (or unreadable) before the pane fetched its env:
+                # never hand secrets to the current process, never register
+                # or kill it. Narrow same-user race invariant only.
+                raise TmuxError(
+                    "already_hosted",
+                    f"pane {pane} changed identity during launch; refusing to hand secrets to the current process",
+                ) from None
+            try:
+                conn, _peer = listener.accept()
+            except (OSError, TimeoutError):
+                self._cleanup_exact(pane, witness)
+                raise TmuxError("launch_failed", "the pane did not fetch its private environment") from None
+            try:
+                if self.current_instance(pane) != witness:
+                    # Replaced between fetch and send: the connected peer is
+                    # not ours. Raise before a single secret byte is sent; the
+                    # finally below closes the connection. No cleanup: the
+                    # live instance is not ours.
+                    raise TmuxError(
+                        "already_hosted",
+                        f"pane {pane} changed identity during launch; refusing to hand secrets to the current process",
+                    ) from None
+                conn.settimeout(_CALL_TIMEOUT)
+                conn.sendall(payload)
+                try:
+                    conn.shutdown(_socket.SHUT_WR)
+                except OSError:
+                    pass
+            except OSError:
+                self._cleanup_exact(pane, witness)
+                raise TmuxError("launch_failed", "could not deliver the private environment") from None
+            finally:
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+            return self._finish_launch(pane, runtime=runtime, ident=ident, witness=witness)
+        finally:
+            try:
+                if listener is not None:
+                    listener.close()
+            except OSError:
+                pass
+            try:
+                with contextlib.suppress(OSError):
+                    if os.path.exists(sock_path):
+                        os.remove(sock_path)
+                os.rmdir(rdv_dir)
+            except OSError:
+                pass
 
     def liveness(self, pane: str) -> str:
         """``alive`` | ``dead`` | ``unknown``; only authoritative target loss is dead."""

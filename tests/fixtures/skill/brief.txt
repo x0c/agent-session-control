@@ -1,0 +1,1 @@
+Fix the login retry: back off once, then surface the server message verbatim.

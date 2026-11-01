@@ -49,6 +49,7 @@ def codex_logged_in() -> bool:
     return proc.returncode == 0 and "not logged in" not in (proc.stdout + proc.stderr).lower()
 
 
+@pytest.mark.live
 @needs_codex
 def test_production_default_detached_codex_turn(tmp_path):
     if not codex_logged_in():

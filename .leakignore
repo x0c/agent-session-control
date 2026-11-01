@@ -11,3 +11,14 @@ fp:8a9639856edc312b
 fp:01c5dcdbbe230b30
 # tests/test_acp_agent.py:43 — JSON Schema DRAFT202012 identifier.
 fp:859de61620842ced
+# Verified 2026-11-01: tests/test_acp_baseline.py — JSON Schema DRAFT202012
+# identifier, not authentication material (same class as the entry above).
+fp:7f520e4284b15bbc
+# tests/test_security_transport.py — explicit synthetic redaction canaries
+# (SYNTHETIC-SECRET-...-NOT-A-CREDENTIAL and FILE-CHANNEL-SECRET-xyz).
+# Exact fingerprints only: other credential assignments remain scanned.
+fp:48d3a28923ceb58f
+fp:05dec3453c408664
+# tests/test_engine_fidelity.py — durable-flaky-1 is a local idempotency key
+# for the append-failure fixture, not an API authentication key.
+fp:a1984db59da9bfed

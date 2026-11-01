@@ -54,4 +54,4 @@ def test_core_imports_without_optional_dependencies():
     assert proc.returncode == 0, proc.stderr
     payload = json.loads(proc.stdout)
     assert payload["ok"] is True
-    assert payload["version"] == "0.1.0"
+    assert payload["version"] == "0.1.1"

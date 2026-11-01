@@ -12,4 +12,5 @@ uv.lock.bak
 htmlcov/
 .coverage*
 *.sqlite3
-.DS_Store/
+.DS_Store
+TASKBOARD.md

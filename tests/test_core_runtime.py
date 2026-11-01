@@ -252,12 +252,27 @@ def test_mcp_channel_rendering(tmp_path):
     assert "SECRET-1" not in repr(codex)
 
     oc = build_create_plan("opencode", cwd, auto_approve=True, mcp_servers=[server])
-    assert oc.argv == ("opencode", "--auto")
+    assert oc.argv == ("opencode", "--standalone", "--auto")
     content = json.loads(oc.to_dict(include_env=True)["env"]["OPENCODE_CONFIG_CONTENT"])
     assert content["mcp"]["servers"]["db"]["command"] == ["/bin/echo", "--x"]
     assert content["mcp"]["servers"]["db"]["environment"] == {"TOKEN": "SECRET-1"}
     assert "SECRET-1" not in json.dumps(oc.to_dict())
     assert oc.to_dict()["env_keys"] == ["OPENCODE_CONFIG_CONTENT"]
+    # No-MCP preserves exact legacy argv (no standalone); resume matches.
+    assert build_create_plan("opencode", cwd, auto_approve=True).argv == ("opencode", "--auto")
+    assert build_resume_plan("opencode", {"id": "abc", "cwd": cwd}, auto_approve=True).argv == (
+        "opencode",
+        "--auto",
+        "-s",
+        "abc",
+    )
+    assert build_resume_plan("opencode", {"id": "abc", "cwd": cwd}, auto_approve=True, mcp_servers=[server]).argv == (
+        "opencode",
+        "--standalone",
+        "--auto",
+        "-s",
+        "abc",
+    )
 
     resumed = build_resume_plan("claude", {"id": "abc", "cwd": cwd}, mcp_servers=[server])
     assert "--mcp-config" in resumed.argv and "--strict-mcp-config" in resumed.argv

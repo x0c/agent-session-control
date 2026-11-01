@@ -90,6 +90,7 @@ class FakeController:
         self.runs: dict[str, dict[str, Any]] = {}
         self.submitted: list[dict[str, Any]] = []
         self.closed: list[str] = []
+        self.session_mcp: dict[str, tuple] = {}
         self._counter = 0
 
     # -- port ------------------------------------------------------------
@@ -102,7 +103,7 @@ class FakeController:
             "interrupt": True,
             "interrupt_keys": ["Escape"],
             "model_selection": False,
-            "mcp": "unsupported",
+            "mcp": "supported",
             "prompt_blocks": ["text", "resource"],
             "resume": {"supported": True},
             "load_history": {"supported": True},
@@ -115,11 +116,15 @@ class FakeController:
     ) -> SessionHandle:
         if runtime != self.runtime:
             raise ControlError("usage_error", f"FakeController serves {self.runtime!r}.", 2)
-        if mcp_servers:
-            raise ControlError("unsupported", "FakeController has no MCP path.", 2)
+        # Baseline-conformant stdio MCP path: accept the adapter-validated
+        # servers and record them (values stay in memory only, never echoed
+        # into errors). Strict value validation lives at the production
+        # foundation boundary (covered in test_acp_real.py).
+        servers = tuple(mcp_servers or ())
         self._counter += 1
         handle = _handle(f"ses_{self._counter:04d}", runtime=runtime, cwd=cwd)
         self.sessions[handle.id] = handle
+        self.session_mcp[handle.id] = servers
         return handle
 
     async def resume(

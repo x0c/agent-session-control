@@ -463,7 +463,7 @@ class SupervisorRunner:
         except (TargetError, CertainFailure) as exc:
             self.fail("unknown", getattr(exc, "code", "observation_unavailable"), exc.message)
             return
-        published: set[int] = set()
+        published: set = set()
         quiet_since = time.monotonic()
         screen, screen_since = self.hooks.screen_hash(self._session_ref()), time.monotonic()
         missing_since: float | None = None
@@ -666,7 +666,7 @@ class SupervisorRunner:
                 )
             )
             if settled:
-                result = build_result(observation)
+                result = build_result(observation, text_limit=None)
                 observed = (result.get("observed_models") or [None])[-1]
                 finality = "native" if observation.get("outcome_evidence") == "native" else "inferred"
                 result["finality"] = finality
@@ -750,26 +750,118 @@ def _event_seq(event: Any) -> int | None:
     return seq if isinstance(seq, int) else None
 
 
-def _publish_new_events(store: Any, run_id: str, observation: dict, published: set[int]) -> bool:
-    """Append unseen correlated events to the run log. Returns True if any."""
-    from agent_session_control.history import compact_event
+def _assert_json_safe(value: Any, *, path: str = "$") -> None:
+    """Reject values ``json.dumps`` would silently corrupt or emit invalidly.
+
+    ``json.dumps`` with defaults stringifies non-string object keys
+    (``{1: ...}`` becomes ``{"1": ...}``) and emits ``NaN``/``Infinity``
+    literals that are not valid JSON. Both would persist or emit content
+    whose identity differs from the native observation, and a later reader
+    cannot recover the original keys. Anything reaching durable storage must
+    therefore contain only ``str`` dict keys and finite JSON scalars. The
+    raised ``ValueError`` carries only the structural path and type names,
+    never raw payload values.
+    """
+    import math as _math
+
+    if value is None or isinstance(value, (bool, str)):
+        return
+    if isinstance(value, int):
+        return
+    if isinstance(value, float):
+        if not _math.isfinite(value):
+            raise ValueError(f"non-finite float at {path}")
+        return
+    if isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _assert_json_safe(item, path=f"{path}[{index}]")
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ValueError(f"non-string dict key of type {type(key).__name__} at {path}")
+            segment = key if (key.isidentifier() and len(key) <= 40) else f"key#{len(key)}"
+            _assert_json_safe(item, path=f"{path}.{segment}")
+        return
+    raise ValueError(f"unsupported type {type(value).__name__} at {path}")
+
+
+def _publish_new_events(store: Any, run_id: str, observation: dict, published: Any) -> bool:
+    """Append unseen correlated events to the run log. Returns True if any.
+
+    Uses the shared lossless ``history.project_event`` with
+    ``text_limit=None`` so full text, message/call identity, roles, tool
+    result/error/interaction/evidence records and Unicode survive. The native
+    sequence is stored as ``native_seq`` (not ``seq``) to preserve the store's
+    own ``seq`` pagination cursor; the poll generation rides alongside for
+    stable identity. Dict-shaped observations are projected identically.
+
+    Durability: each event is projected, strictly JSON-validated (finite
+    values, ``str``-only dict keys, no silent conversion), then durably
+    appended before its native identity is marked published. Identical
+    repeats deduplicate (same content digest yields the same versioned store
+    identity, so the store's ``UNIQUE(run_id, identity)`` converges); an
+    expanded cumulative observation at the same native sequence carries a new
+    digest and is preserved as a new row under the same ``native_seq`` /
+    ``generation`` in the body. Storage cursors stay distinct from native
+    sequence/generation. Unrepresentable events raise a sanitized
+    ``ValueError`` explicitly instead of being silently dropped or converted;
+    storage failures propagate without marking published so a later poll
+    reconciles idempotently. ``published`` accepts the legacy ``set`` (seqs
+    plus version keys) or a ``dict`` mapping ``(generation, seq)`` to content
+    digest for compatibility.
+    """
+    import json as _json
+
+    from agent_session_control.history import project_event
 
     advanced = False
+    generation = str(observation.get("generation", "") or "")
     for event in observation.get("events", []):
         seq = _event_seq(event)
-        if seq is None or seq in published:
-            continue
-        published.add(seq)
-        advanced = True
+        if seq is None:
+            raise ValueError("unrepresentable event without native sequence")
         try:
-            body = (
-                {"kind": "activity", **compact_event(event)}
-                if not isinstance(event, dict)
-                else {"kind": "activity", **event}
-            )
-            store.append(run_id, f"activity:{seq}", body)
-        except Exception:
-            pass
+            projected = project_event(event, text_limit=None)
+        except Exception as exc:
+            raise ValueError(f"unrepresentable event at native_seq {seq}: {exc}") from exc
+        native = projected.pop("seq", seq)
+        body = {"kind": "activity", **projected, "native_seq": native, "generation": generation}
+        try:
+            _assert_json_safe(body)
+            _json.dumps(body, ensure_ascii=False, allow_nan=False)
+        except ValueError as exc:
+            raise ValueError(f"unrepresentable event at native_seq {seq}: {exc}") from exc
+        except Exception as exc:
+            raise ValueError(f"unrepresentable event at native_seq {seq}: {type(exc).__name__}") from exc
+        content_digest = _digest(projected)
+        if generation:
+            identity = f"activity:{generation}:{seq}:{content_digest[:16]}"
+        else:
+            identity = f"activity:{seq}:{content_digest[:16]}"
+        if isinstance(published, dict):
+            key = (generation, seq)
+            if published.get(key) == content_digest:
+                continue
+            added = store.append(run_id, identity, body)
+            published[key] = content_digest
+            if added:
+                advanced = True
+        else:
+            version_key = (generation, seq, content_digest)
+            if version_key in published:
+                continue
+            added = store.append(run_id, identity, body)
+            try:
+                published.add(version_key)
+            except Exception:
+                pass
+            try:
+                published.add(seq)
+            except Exception:
+                pass
+            if added:
+                advanced = True
     return advanced
 
 

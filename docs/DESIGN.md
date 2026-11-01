@@ -1,7 +1,7 @@
 # Reusable session control design
 
-Status: 0.1.0 released 2026-10-30; this document records the adopted
-requirements. Provenance: extracted from a working host implementation,
+Status: 0.1.1 hardening; this document records the adopted requirements.
+Current verification and distribution limits are in `docs/INTEGRATION.md`. Provenance: extracted from a working host implementation,
 built in four parallel slices (core/store, terminal execution, ACP
 adapter, host integration) with independent read-only reviews; the
 release gate is recorded in the README and `docs/INTEGRATION.md`.
@@ -59,6 +59,58 @@ preparation; extraction never moves UI code here.
 | acp | `src/agent_session_control/{acp,cli,__main__}.py`, `tests/test_acp*.py`, `tests/fixtures/acp/`, `docs/ACP.md` | Controller port in contract, official SDK/released schema; no manifest edits |
 | host integration | Host-side non-UI `control*.py`, bounded `runtime/*` changes, host dependency/install/lock plumbing, dedicated integration tests, `examples/`, `tests/test_consumer*.py` | Core contract and engine port |
 
+## Independent-product hardening
+
+Adopted 2026-11-01: finish the public SDK, CLI and ACP user paths, not only
+the extraction narrative. Keep the library a local session-control component,
+not a task planner or scheduler. The companion skill teaches the existing CLI;
+it does not add orchestration policy to the engine. Its text is personally
+reviewed by the coordinator. Acceptance additionally uses fresh OpenCode
+sessions with the ordinary installed skill catalog: implicit selection and
+explicit skill use are tested separately, inspecting native skill-load/tool
+records and actual CLI results. Include missing-install bootstrap, a real
+owned lifecycle, timeout/idempotency behavior, safe MCP input and nearby
+out-of-scope questions. A structural pass or promise to use the skill is not
+behavioral evidence; a wording or workflow correction reopens those cases.
+Evaluation prompts and expected answers belong to test fixtures, not installed
+skill references. Runtime references contain operational schemas/procedures only;
+reading the assessment corpus invalidates independent behavior evidence after
+that read, though earlier observed selection remains separately attributable.
+
+- MCP environment credentials must stay out of every process argv, including
+  the CLI and intermediate tmux launcher, and out of diagnostics and persisted
+  state. A redacted plan is not execution-channel evidence. Provide a safe
+  non-argv CLI input route while retaining existing non-secret input syntax.
+- Production history load, live content and terminal results use full-fidelity
+  projections. Bounded query compatibility stays explicit and must not silently
+  become protocol delivery. Test the real controller-to-adapter path.
+- Stable ACP v1 stdio MCP is baseline, not optional. Profiles with a baseline
+  gap remain usable through SDK/CLI but must fail clearly before serving a
+  production ACP connection; no draft-v2 capability workaround is permitted.
+- A runtime matrix separates plan generation, owned hosting, native turn
+  completion, hosted MCP delivery and protocol evidence. Headless MCP success
+  is not hosted interactive success. Unsupported or unavailable paths stay
+  visible; no silent downgrade or fabricated coverage.
+- Install recipes distinguish core-only use, the default history-observing
+  controller, and ACP over that controller. Published wheels, not local uv
+  source settings, must resolve in a clean external environment.
+- Public prose explains user outcomes and retains meaningful safety contracts,
+  licenses and published compatibility symbols. It does not describe internal
+  extraction work as a feature. Public task history is not an active taskboard.
+- All changes require complete supporting tests and iterative correction:
+  reproduce defects before fixes; cover success, refusal, failure, concurrency
+  and recovery as relevant; exercise actual launch, installed-package and
+  external-consumer boundaries. Docs, CI, publishing and skills have runnable
+  consistency/behavior checks too. No-credential CI explicitly excludes registered
+  quota-spending tests while the default local gate retains the complete suite.
+  A publisher receives the exact validated build artifacts; it never rebuilds
+  source in an OIDC-privileged job. A worker report never replaces coordinator
+  inspection and rerun. Return rejected work to the same worker until it passes.
+- Publish/install verified changes from a reproducible commit. Prepare PyPI
+  publishing for both distributions, but do not claim publication until a clean
+  client can download and install the actual index artifact. Never publish
+  another contributor's uncommitted source to complete this task.
+
 ## Delivery and test obligations
 
 1. Pure launch plans preserve native argument semantics across the five currently supported extraction-source runtimes and explicit auto-approval/model policies. New adapters remain pluggable; no dormant runtime becomes a new visible product entry.
@@ -75,7 +127,8 @@ complete checks and isolated real-terminal behavior before local
 installation and installed-path verification.
 8. Deliver one authoritative shared implementation. A temporary source-host wrapper is acceptable only when it delegates; leaving a second controller, store or parser is not extraction acceptance.
 
-The library ships versioned artifacts on GitHub Releases
-(`agent_session_control-0.1.0-py3-none-any.whl` plus sdist); consumers pin
-that immutable wheel (see `docs/INTEGRATION.md`), never an editable/path
-dependency. Host product releases remain the host's own decision.
+The library ships versioned wheel and sdist artifacts on GitHub Releases;
+PyPI delivery is added only after index readback and clean installation pass
+(see `docs/INTEGRATION.md`). Consumers use published versioned artifacts,
+never an editable/path dependency. Host product releases remain the host's
+own decision.

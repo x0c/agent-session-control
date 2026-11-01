@@ -241,10 +241,6 @@ class _ControlBase(unittest.TestCase):
 
         return asyncio.run(_wait())
 
-    def _drain_threads(self):
-        for thread in list(getattr(self.controller, "_threads", [])):
-            thread.join(timeout=20)
-
 
 class ConsumerControlTests(_ControlBase):
     def test_create_send_observe_settle(self):
@@ -285,7 +281,6 @@ class ConsumerControlTests(_ControlBase):
         self.assertIn(self.backend.hosted[-1]["pane"], self.backend.closed, "close releases the owned pane")
         row = self.controller.sessions.get(handle.id)
         self.assertEqual(row["status"], "closed")
-        self._drain_threads()
 
     def test_interrupt_targets_only_the_exact_run(self):
         async def _flow():
@@ -322,7 +317,6 @@ class ConsumerControlTests(_ControlBase):
         self.assertEqual(result_a.state, "completed")
         asyncio.run(self.controller.close_session(handle_a.id))
         asyncio.run(self.controller.close_session(handle_b.id))
-        self._drain_threads()
 
     def test_resume_preserves_exact_native_identity(self):
         async def _flow():
@@ -348,7 +342,6 @@ class ConsumerControlTests(_ControlBase):
 
         resumed = asyncio.run(_flow())
         self.assertTrue(resumed.id)
-        self._drain_threads()
 
     def test_capabilities_are_honest(self):
         async def _flow():
@@ -358,7 +351,6 @@ class ConsumerControlTests(_ControlBase):
             self.assertFalse(info["steer"], "no true steering is claimed without backend support")
 
         asyncio.run(_flow())
-        self._drain_threads()
 
 
 class ConsumerDurabilityTests(_ControlBase):
@@ -412,9 +404,205 @@ class ConsumerDurabilityTests(_ControlBase):
             await self.controller.close_session(handle.id)
 
         asyncio.run(_close())
-        self._drain_threads()
-        for thread in list(getattr(reopened, "_threads", [])):
-            thread.join(timeout=20)
+        reopened.reap_children()
+
+
+class NativeSmokeContractTests(unittest.TestCase):
+    """Deterministic failure-contract tests for ``examples/native_smoke.py``.
+
+    No model calls, no tmux, no subprocess: ``LocalController`` is replaced
+    with scripted fakes behind the same async port
+    (``create``/``list_sessions``/``close_session``). ``asyncio.sleep`` is
+    stubbed to keep the suite fast; timing is not under test.
+    """
+
+    @staticmethod
+    def _load_smoke():
+        import importlib.util
+
+        repo = Path(__file__).resolve().parents[1]
+        spec = importlib.util.spec_from_file_location("asc_native_smoke", str(repo / "examples" / "native_smoke.py"))
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    @staticmethod
+    def _instant_sleep():
+        async def _none(_delay, *args, **kwargs):
+            return None
+
+        return _none
+
+    def _make_controller(
+        self,
+        *,
+        liveness="alive",
+        fail_close=False,
+        fail_final_list=False,
+        missing_first=False,
+        missing_final=False,
+        final_status="closed",
+    ):
+        from agent_session_control.errors import ControlError
+
+        calls = {"lists": 0}
+
+        class _Handle:
+            def __init__(self, sid):
+                self.id = sid
+
+        class _Fake:
+            def __init__(self, root=None, namespace="test"):
+                self.root = root
+                self.namespace = namespace
+                self._closed = False
+                self._sid = f"ses_{uuid.uuid4().hex[:12]}"
+                if root is not None:
+                    os.makedirs(str(root), exist_ok=True)
+
+            async def create(self, runtime, cwd, **kwargs):
+                return _Handle(self._sid)
+
+            async def list_sessions(self, **kwargs):
+                calls["lists"] += 1
+                if calls["lists"] <= 2 and missing_first and calls["lists"] == 1:
+                    return {"sessions": [], "next_cursor": None}
+                if self._closed and fail_final_list:
+                    raise ControlError("list_failed", "final readback unreadable")
+                if self._closed and missing_final:
+                    return {"sessions": [], "next_cursor": None}
+                if self._closed:
+                    return {
+                        "sessions": [{"session_id": self._sid, "status": final_status}],
+                        "next_cursor": None,
+                    }
+                return {
+                    "sessions": [{"session_id": self._sid, "pane_liveness": liveness, "status": "hosted"}],
+                    "next_cursor": None,
+                }
+
+            async def close_session(self, session_id, **kwargs):
+                if fail_close:
+                    raise ControlError("close_failed", "could not release the owned pane")
+                self._closed = True
+                return None
+
+        return _Fake
+
+    def _run_leg(self, smoke, fake_cls):
+        from unittest import mock
+
+        import agent_session_control.controller as ctrl_mod
+
+        with mock.patch.object(ctrl_mod, "LocalController", fake_cls):
+            with mock.patch.object(smoke.asyncio, "sleep", new=self._instant_sleep()):
+                return asyncio.run(smoke.leg_native("claude"))
+
+    def test_error_with_closed_closed_still_fails_main(self):
+        smoke = self._load_smoke()
+        from unittest import mock
+
+        async def _bad_leg(rid):
+            return {
+                "runtime": rid,
+                "listed": True,
+                "still_listed": True,
+                "liveness": "alive",
+                "pane_liveness_after_wait": "alive",
+                "closed": "closed",
+                "error": "boom: earlier failure",
+                "retained_root": "/tmp/asc-retained-test",
+                "control_root": "/tmp/asc-retained-test/control",
+                "elapsed_s": 0.1,
+            }
+
+        with mock.patch.object(smoke, "leg_native", new=_bad_leg):
+            with mock.patch.object(smoke.shutil, "which", return_value="/usr/bin/claude"):
+                with mock.patch.object(smoke, "leg_plans", return_value={}):
+                    rc = smoke.main(["--runtime", "claude", "--skip-stdio"])
+        self.assertEqual(rc, 1, "error + closed='closed' must exit nonzero")
+
+    def test_native_leg_failed_predicate_covers_doubt(self):
+        smoke = self._load_smoke()
+        base = {
+            "runtime": "claude",
+            "listed": True,
+            "still_listed": True,
+            "liveness": "alive",
+            "pane_liveness_after_wait": "alive",
+            "closed": "closed",
+            "retained_root": None,
+        }
+        self.assertFalse(smoke._native_leg_failed(dict(base)))
+        self.assertTrue(smoke._native_leg_failed({**base, "error": "boom"}))
+        self.assertTrue(smoke._native_leg_failed({**base, "closed": "hosted"}))
+        self.assertTrue(smoke._native_leg_failed({**base, "listed": False}))
+        self.assertTrue(smoke._native_leg_failed({**base, "still_listed": False}))
+        self.assertTrue(smoke._native_leg_failed({**base, "liveness": "dead"}))
+        self.assertTrue(smoke._native_leg_failed({**base, "pane_liveness_after_wait": "unknown"}))
+        self.assertTrue(smoke._native_leg_failed({**base, "retained_root": "/tmp/asc-r"}))
+        skipped = {"runtime": "claude", "skipped": "executable not installed"}
+        self.assertFalse(smoke._native_leg_failed(skipped))
+
+    def test_close_failure_retains_and_invents_nothing(self):
+        import shutil as _shutil
+
+        smoke = self._load_smoke()
+        fake = self._make_controller(fail_close=True)
+        outcome = self._run_leg(smoke, fake)
+        self.assertIn("error", outcome)
+        self.assertNotIn("closed", outcome, "failed close must never invent closed='closed'")
+        self.assertTrue(outcome.get("retained_root"))
+        self.assertTrue(Path(outcome["retained_root"]).is_dir())
+        self.assertTrue(Path(outcome["control_root"]).is_dir())
+        _shutil.rmtree(outcome["retained_root"], ignore_errors=True)
+        self.assertTrue(smoke._native_leg_failed(outcome))
+
+    def test_final_list_failure_retains_and_invents_nothing(self):
+        import shutil as _shutil
+
+        smoke = self._load_smoke()
+        fake = self._make_controller(fail_final_list=True)
+        outcome = self._run_leg(smoke, fake)
+        self.assertIn("error", outcome)
+        self.assertIn("close_readback_failed", outcome["error"])
+        self.assertNotIn("closed", outcome, "unreadable readback must never invent closed")
+        self.assertTrue(Path(outcome["retained_root"]).is_dir())
+        _shutil.rmtree(outcome["retained_root"], ignore_errors=True)
+        self.assertTrue(smoke._native_leg_failed(outcome))
+
+    def test_missing_listing_retains_and_fails(self):
+        import shutil as _shutil
+
+        smoke = self._load_smoke()
+        fake = self._make_controller(missing_first=True)
+        outcome = self._run_leg(smoke, fake)
+        self.assertIn("error", outcome)
+        self.assertTrue(Path(outcome["retained_root"]).is_dir())
+        _shutil.rmtree(outcome["retained_root"], ignore_errors=True)
+        self.assertTrue(smoke._native_leg_failed(outcome))
+
+    def test_not_alive_while_expected_fails_but_close_verified(self):
+        import shutil as _shutil
+
+        smoke = self._load_smoke()
+        fake = self._make_controller(liveness="dead")
+        outcome = self._run_leg(smoke, fake)
+        self.assertIn("error", outcome, "non-alive liveness while hosted must fail")
+        self.assertEqual(outcome.get("closed"), "closed", "close itself still verifies")
+        self.assertTrue(Path(outcome["retained_root"]).is_dir(), "error retains recovery root")
+        _shutil.rmtree(outcome["retained_root"], ignore_errors=True)
+        self.assertTrue(smoke._native_leg_failed(outcome))
+
+    def test_verified_release_removes_temp(self):
+        smoke = self._load_smoke()
+        fake = self._make_controller()
+        outcome = self._run_leg(smoke, fake)
+        self.assertNotIn("error", outcome)
+        self.assertEqual(outcome.get("closed"), "closed")
+        self.assertIsNone(outcome.get("retained_root"))
+        self.assertFalse(Path(outcome["control_root"]).exists(), "verified release removes scratch")
 
 
 class ConsumerAcpEntryTests(unittest.TestCase):

@@ -114,6 +114,23 @@ class UnknownCapsController(FakeController):
         return {}
 
 
+class RefusingMcpController(FakeController):
+    """Backend without a per-session MCP path: refuses, never echoes values."""
+
+    def capabilities(self, runtime: str) -> dict:
+        caps = super().capabilities(runtime)
+        return {**caps, "mcp": "unsupported"}
+
+    async def create(
+        self, runtime: str, cwd: str, *, model: str | None = None, mcp_servers: Any = (), actor: str = "local-user"
+    ) -> Any:
+        from agent_session_control.errors import ControlError
+
+        if mcp_servers:
+            raise ControlError("unsupported", "RefusingMcpController has no MCP path.", 2)
+        return await super().create(runtime, cwd, model=model, mcp_servers=(), actor=actor)
+
+
 class GatedController(FakeController):
     """start_turn parks at a gate: deterministic cancellation races."""
 
@@ -334,7 +351,9 @@ def test_new_session_mcp_refusal_carries_no_secrets() -> None:
     from acp import RequestError
 
     async def go() -> None:
-        agent, _ = make_agent()
+        # A backend without the stdio baseline refuses before anything
+        # launches; only the server name travels, never secret values.
+        agent = ControlAgent(RefusingMcpController(), "fake-test")
         with pytest.raises(RequestError) as exc:
             await agent.new_session(
                 "/tmp",
@@ -342,6 +361,14 @@ def test_new_session_mcp_refusal_carries_no_secrets() -> None:
             )
         assert exc.value.code == -32602
         assert "sekrit" not in json.dumps(exc.value.data or {})
+        # A baseline-conformant backend accepts the same stdio entry.
+        good_agent, good_controller = make_agent()
+        resp = await good_agent.new_session(
+            "/tmp",
+            mcp_servers=[{"name": "fs", "command": "/usr/bin/mcp", "env": [{"name": "TOKEN", "value": "sekrit"}]}],
+        )
+        assert resp.session_id.startswith("ses_")
+        assert good_controller.session_mcp[resp.session_id] is not None
 
     asyncio.run(go())
 

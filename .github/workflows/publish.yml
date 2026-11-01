@@ -1,0 +1,150 @@
+name: Publish (Trusted Publisher)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Exact release tag to publish (e.g. v0.1.1)"
+        required: true
+      environment:
+        description: "PyPI environment (must match the Trusted Publisher environment)"
+        required: false
+        default: "pypi"
+
+concurrency:
+  group: publish-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build dist from exact tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      commit: ${{ steps.record.outputs.commit }}
+      tag: ${{ steps.record.outputs.tag }}
+    steps:
+      # Pinned 2026-07-16 (actions/checkout v4). Exact selected tag checkout.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+      # Pinned 2025-04-24 (actions/setup-python v5).
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      # Pinned 2025-09-30 (astral-sh/setup-uv v6).
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+      - name: Verify tag matches package version
+        run: |
+          test "$(uv run --no-sync --group dev python -c 'import tomllib;print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])' 2>/dev/null || python3 -c 'import tomllib;print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')" = "${TAG#v}" || { echo "tag/version mismatch"; exit 1; }
+        env:
+          TAG: ${{ inputs.tag }}
+      - name: Resolve tag commit (exact tag only, no arbitrary ref)
+        id: record
+        run: |
+          set -euo pipefail
+          test -n "${TAG}" || { echo "missing TAG"; exit 1; }
+          # The input must resolve as an exact tag; branches, SHAs, or
+          # missing refs are refused (not an arbitrary ref).
+          EXPECTED="$(git rev-parse --verify "refs/tags/${TAG}^{commit}")"
+          HEAD_SHA="$(git rev-parse HEAD)"
+          test "${HEAD_SHA}" = "${EXPECTED}" || { echo "HEAD ${HEAD_SHA} != tag ${TAG} commit ${EXPECTED}"; exit 1; }
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "commit=${EXPECTED}" >> "$GITHUB_OUTPUT"
+          echo "resolved ${TAG} -> ${EXPECTED} (HEAD ${HEAD_SHA})"
+        env:
+          TAG: ${{ inputs.tag }}
+      - name: Build wheel and sdist
+        run: uv build
+      - name: Verify artifacts (local release script, no network publish)
+        run: uv run --group dev --all-extras python scripts/release.py
+      - name: Record digests and build info (validated artifact identity)
+        run: |
+          set -euo pipefail
+          ls -la dist/
+          test -f dist/SHA256SUMS || { echo "missing dist/SHA256SUMS from scripts/release.py"; exit 1; }
+          # Basename-relative manifest (scripts/release.py writes basenames only).
+          # Never regenerate via `dist/*` glob: that includes the manifest itself
+          # (truncated at redirection) so the self-digest always fails.
+          test "$(wc -l < dist/SHA256SUMS | tr -d ' ')" = "2" || { echo "manifest must list exactly wheel+sdist"; exit 1; }
+          grep -q "\.whl$" dist/SHA256SUMS || { echo "manifest missing wheel"; exit 1; }
+          grep -q "\.tar\.gz$" dist/SHA256SUMS || { echo "manifest missing sdist"; exit 1; }
+          if grep -q "SHA256SUMS" dist/SHA256SUMS; then echo "manifest must not self-list"; exit 1; fi
+          if grep -q "build-info" dist/SHA256SUMS; then echo "manifest must not list build-info"; exit 1; fi
+          (cd dist && sha256sum -c SHA256SUMS)
+          echo "${TAG} ${COMMIT}" > dist/build-info.txt
+          cat dist/SHA256SUMS
+          cat dist/build-info.txt
+          ls -la dist/
+        env:
+          TAG: ${{ steps.record.outputs.tag }}
+          COMMIT: ${{ steps.record.outputs.commit }}
+      # Pinned 2025-03-19 (actions/upload-artifact v4).
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: asc-dist
+          path: dist/*
+          if-no-files-found: error
+      - name: Keep GitHub wheel recipe until PyPI readback passes
+        run: |
+          ls -la dist/
+          echo "GitHub Release must attach dist/* for tag ${TAG} independently of PyPI."
+        env:
+          TAG: ${{ inputs.tag }}
+
+  publish:
+    name: publish to PyPI
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      # Job-only OIDC mint for Trusted Publishing; no other permission.
+      id-token: write
+    environment: ${{ inputs.environment }}
+    steps:
+      # The publisher MUST NOT rebuild: it downloads the exact validated
+      # build artifact. No checkout/setup/build here by design.
+      # Pinned 2025-04-24 (actions/download-artifact v4.3.0).
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: asc-dist
+          path: dist
+      - name: Validate downloaded artifact (tag/commit/version/digest)
+        # All input via env: the tag never interpolates directly into `run`.
+        run: |
+          set -euo pipefail
+          ls -la dist/
+          test -f dist/SHA256SUMS || { echo "missing dist/SHA256SUMS"; exit 1; }
+          test -f dist/build-info.txt || { echo "missing build-info.txt"; exit 1; }
+          (cd dist && sha256sum -c SHA256SUMS)
+          BUILD_TAG="$(cut -d' ' -f1 dist/build-info.txt)"
+          BUILD_SHA="$(cut -d' ' -f2 dist/build-info.txt)"
+          test -n "${BUILD_SHA}" || { echo "missing build commit"; exit 1; }
+          test "${BUILD_TAG}" = "${TAG}" || { echo "artifact tag mismatch: ${BUILD_TAG} != ${TAG}"; exit 1; }
+          test "${BUILD_TAG}" = "${EXPECTED_TAG}" || { echo "build-info tag != trusted build output"; exit 1; }
+          test "${BUILD_SHA}" = "${EXPECTED_COMMIT}" || { echo "build-info commit != trusted build output ${EXPECTED_COMMIT}"; exit 1; }
+          WANT="${TAG#v}"
+          matched=0
+          for f in dist/*; do
+            case "$f" in
+              *"$WANT"*) matched=1; break ;;
+            esac
+          done
+          test "$matched" = "1" || { echo "artifact filenames must carry ${WANT}"; exit 1; }
+          wheels=(dist/*.whl)
+          test -f "${wheels[0]}" || { echo "missing wheel artifact"; exit 1; }
+          WHEEL="${wheels[0]}"
+          VER="$(python3 -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1]); n=[x for x in z.namelist() if x.endswith('.dist-info/METADATA')][0]; print([l for l in z.read(n).decode().splitlines() if l.startswith('Version:')][0].split(':')[1].strip())" "${WHEEL}")"
+          test "${VER}" = "${WANT}" || { echo "wheel version mismatch: ${VER} != ${WANT}"; exit 1; }
+          echo "artifact validated: tag=${TAG} commit=${BUILD_SHA} version=${VER}"
+          rm -f dist/SHA256SUMS dist/build-info.txt
+          ls -la dist/
+        env:
+          TAG: ${{ inputs.tag }}
+          EXPECTED_TAG: ${{ needs.build.outputs.tag }}
+          EXPECTED_COMMIT: ${{ needs.build.outputs.commit }}
+      # Pinned 2026-10-20 (pypa/gh-action-pypi-publish v1.14.3).
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          attestations: true

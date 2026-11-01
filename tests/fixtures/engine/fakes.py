@@ -104,6 +104,16 @@ class MemoryStore:
             data["spec"] = copy.deepcopy(self.specs[run_id])
         return data
 
+    def find(self, key: str) -> dict | None:
+        """Production read contract: locate a run by idempotency key."""
+        if key not in self.keys:
+            return None
+        run_id = self.keys[key]
+        data = copy.deepcopy(self.runs[run_id])
+        data["version"] = _run_version(self.runs[run_id])
+        data["_digest"] = self.digests[key]
+        return data
+
     def update(self, run_id: str, changes: dict, **kwargs) -> dict:
         if run_id not in self.runs:
             raise _conflict("not_found", f"unknown run: {run_id}")
@@ -328,6 +338,15 @@ class FileStore(MemoryStore):
             try:
                 self._sync_in()
                 return MemoryStore.get(self, run_id, private=private)
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+    def find(self, key):
+        with open(self.lock_path, "a+") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            try:
+                self._sync_in()
+                return MemoryStore.find(self, key)
             finally:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 

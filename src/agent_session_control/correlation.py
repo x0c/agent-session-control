@@ -74,13 +74,22 @@ def _lossless(value: Any) -> Any:
     """Plain-data projection of nested native records without loss.
 
     Frozen dataclasses (SessKit evidence, outcomes, errors, interactions,
-    usage, compaction) become plain dicts recursively. Anything else passes
-    through untouched: fields are never parsed, summarized or fabricated.
+    usage, compaction) become plain dicts recursively, including dataclasses
+    nested inside dicts/lists/tuples (e.g. genuine native records inside
+    ``raw_input``/``raw_output``). Anything else passes through untouched:
+    fields are never parsed, summarized or fabricated.
     """
     import dataclasses as _dataclasses
+    from types import SimpleNamespace as _SimpleNamespace
 
     if _dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return _dataclasses.asdict(value)
+        return {k: _lossless(v) for k, v in _dataclasses.asdict(value).items()}
+    if isinstance(value, _SimpleNamespace):
+        return {k: _lossless(v) for k, v in vars(value).items()}
+    if isinstance(value, dict):
+        return {k: _lossless(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_lossless(v) for v in value]
     return value
 
 
@@ -242,14 +251,18 @@ def build_result(observation: dict, *, text_limit: int | None = _RESULT_TEXT_LIM
 
     ``text_limit`` caps the final response for explicitly bounded callers
     (Corral query compatibility); ``None`` returns the complete native final
-    response for lossless delivery paths. Usage aggregation, error sampling
-    and the ``unverified`` acceptance marker are unchanged.
+    response for lossless delivery paths. Error samples follow the same
+    rule: bounded callers keep the historical compact summaries, lossless
+    callers receive the full shared projection. Usage aggregation, and the
+    ``unverified`` acceptance marker are unchanged.
     """
-    events = observation.get("events") or []
     events = observation.get("events") or []
     replies = [e for e in events if _field(e, "type") == "assistant_message" and (_field(e, "text") or "").strip()]
     tools = [e for e in events if _field(e, "type") == "tool_call"]
-    errors = [compact_event(e) for e in events if _field(e, "error") is not None]
+    if text_limit is None:
+        errors = [project_event(e, text_limit=None) for e in events if _field(e, "error") is not None]
+    else:
+        errors = [compact_event(e) for e in events if _field(e, "error") is not None]
     usage: dict = {}
     models = []
     seen_usage = set()

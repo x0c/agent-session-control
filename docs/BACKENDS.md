@@ -13,7 +13,7 @@ SessKit.
 
 | Module | Owns |
 |---|---|
-| `terminal.py` | Owned tmux hosting on root+namespace sockets, launch-instance identity, verified paste/submit, readiness, runtime interrupt sequences, pane liveness, input locks. Stdlib only. |
+| `terminal.py` | Owned tmux hosting on root+namespace sockets, launch-instance identity, private per-session env rendezvous (never `-e` argv), verified paste/submit, readiness, runtime interrupt sequences, pane liveness, input locks. Stdlib only. |
 | `history.py` | Thin typed wrappers over the sole shared correlation implementation plus SessKit adaptation (public readers/outcomes/scans, lazy import). No native parser, no duplicated algorithm. |
 | `supervisor.py` | Generic per-run supervision (admit, deliver once, observe, settle) over injected `SupervisorHooks`; run/target file locks; crash recovery without replay; detached entry. Usable by `LocalController` and by the existing host. |
 | `controller.py` | Production `LocalController` implementing the `SessionController` port; durable session registry; exact native binding; plan/host/submit/wait/interrupt/close/detach; shared hook builder used in-process and detached. |
@@ -185,6 +185,36 @@ applies the bound). No second projection algorithm lives in the engine.
   the outer edge (`terminal.PaneInputLock`); `submit_text` holds the pane
   lock across paste-to-Enter so concurrent writers cannot concatenate lines.
   Paste buffers are unique per call.
+- Per-session environment travels through a single-use private Unix-socket
+  rendezvous, never through tmux `-e`/`set-environment` argv, server-global
+  state or secret files. The payload is serialized and size-checked before any
+  tmux call or pane exists, so an oversized/unencodable env never creates
+  (then kills) a pane and never leaves a rendezvous directory. The pane
+  starts a stdlib launcher whose argv carries only the socket path plus the
+  target argv (multi-arg shell-command runs directly without a shell,
+  preserving quoting/Unicode/newlines); the launcher fetches the JSON env
+  over the socket and execs the target with `os.execvpe`. The 0700 rendezvous
+  directory is unlinked on every path. The authoritative creation witness is
+  the atomic `new-session -P -F "#{pane_id}:#{pane_pid}"` stdout parsed from
+  that same server call (never a by-name post-launch query, which is only a
+  later observation compared against the witness); unreadable/forged output
+  aborts with no register, no secret handoff and no kill. The live identity
+  is compared against the witness BEFORE the rendezvous accept and AGAIN
+  after accept immediately before sending, so a replacement before accept or
+  between accept and send receives zero secret bytes (connection closed
+  unsent). Delivery
+  failures clean up only that exact witnessed instance via
+  `kill-pane -t <pane_id>` (never the reusable session name). A
+  replacement/foreign process, an unreadable instance, or a missing witness
+  is left alone, and finish verifies the witness before recording (never a
+  blind `kill-session -t <name>`). Errors never format values into messages,
+  and `TimeoutExpired` objects never hold secrets because secrets are never
+  passed to `subprocess.run`. Same-user namespaces prevent mistakes, not
+  hostile-tenant isolation; caller-supplied secret args in `argv` itself
+  remain visible by design. CLI `--mcp-servers-file` reads are bounded to
+  limit+1 chars; missing/unreadable/invalid-UTF-8 inputs fail as
+  `usage_error` without echo or traceback, and inline-vs-file conflict is by
+  flag presence, not truthiness.
 - Durable intent (spec + audit) precedes side effects. `start_turn` returns
   after acceptance; an identical retry (or explicit `recover_run`) reconciles
   run-lock ownership and relaunches orphaned supervision without replaying
@@ -214,11 +244,24 @@ applies the bound). No second projection algorithm lives in the engine.
 
 - Real owned-terminal path: disposable echo agent on unique sockets —
   host/capture/liveness/close, multiline/Unicode paste/submit round-trip,
+  private env delivery with hostile characters and per-session scope (no `-e`
+  argv, no server-global leak, preflight oversize/unencodable refusal without
+  orphan, replacement-during-handshake left alive, exact-instance cleanup),
   `C-c` interrupt killing the pane process, two concurrent writers landing
   intact, socket isolation incl. case-distinct namespaces, same-ident reuse,
-  foreign-pane close refusal, replacement-process refusal with the
-  replacement left alive, dead-pane record cleanup (`tests/
-  test_engine_terminal.py`, 16 tests).
+  foreign-pane close refusal, replacement-process refusal with the replacement
+  left alive, dead-pane record cleanup (`tests/test_engine_terminal.py`, 16
+  tests; `tests/ test_security_transport.py` for secret transport, MCP file
+  channel and opencode standalone).
+- MCP launch channels: Claude `--mcp-config` with `${NAME}` references,
+  Codex `-c mcp_servers.*` with `env_vars` forwarding, OpenCode
+  `OPENCODE_CONFIG_CONTENT` with launcher-owned `--standalone` (verified via
+  `--standalone debug config` and `--standalone run` on v2.2.5; ambient
+  service ignores the env). CLI accepts `--mcp-servers-file PATH` (`-` for
+  piped stdin) mutually exclusive with inline `--mcp-servers` by presence;
+  file/stdin reads are bounded, oversized/invalid-UTF-8/missing inputs refuse
+  as `usage_error` without echo or traceback; dry-run emits only redacted
+  projections and creates no state.
 - Supervisor semantics over fake observer/backend: native settle, certain
   vs uncertain dispatch, no-replay recovery, binding retries and bounded
   give-up, missing-history bound, generation reset, mixed attribution,

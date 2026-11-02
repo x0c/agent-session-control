@@ -39,7 +39,7 @@ External applications can independently generate native launch/resume plans, con
 This design owns the extraction scope and acceptance obligations.
 Source-level fixes and partial test passes do not establish complete
 runtime/ACP coverage; versioned artifacts and installed-path acceptance
-are recorded with their evidence (0.1.0: `docs/INTEGRATION.md`).
+are recorded with their evidence in `docs/INTEGRATION.md`.
 
 ## Stable protocol baseline
 

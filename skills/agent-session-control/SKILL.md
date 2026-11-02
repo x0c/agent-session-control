@@ -39,7 +39,8 @@ instead of assuming the hint resolves to the same copy.
 
 ### If the CLI is missing
 
-Install only from the fixed product release until real PyPI exists.
+Use the fixed GitHub release below. Version 0.1.1 is also published on
+[PyPI](https://pypi.org/project/agent-session-control/0.1.1/).
 Do not invent URLs, do not overwrite another installed version without
 explicit approval, and do not write outside the user directory without
 approval. Requires Python `>=3.10,<3.15`: pick any compatible

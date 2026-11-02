@@ -90,6 +90,16 @@ Publisher. It resolved tag `v0.1.1` to commit
 `85721198e34e934703e4226e4e122b521548fe98`, checked transferred artifacts and
 published without rebuilding in the privileged job. Post-publication README,
 security-policy and receipt updates do not replace that immutable release tag.
+The [post-publication documentation matrix](https://github.com/x0c/agent-session-control/actions/runs/41328116573)
+also passed all six macOS/Linux jobs. The source Skill still bootstraps from the
+verified GitHub wheel; its availability wording can be newer than the Skill bytes
+inside the immutable 0.1.1 archives. This wording refresh changes neither its
+workflow nor its description and adds no new native-selection evidence.
+
+The private local receipt and complete publication/CI/install diagnostics are
+retained under `~/.config/agent-session-control/acceptance/0.1.1-LqOoy6/`, including
+`publication-receipt.json`. Temporary work directories are not the durable
+evidence source; the public run and download links above remain portable.
 
 ### Retained upstream action diagnostics
 

@@ -2,24 +2,24 @@
 
 **语言：** [English](README.md) | 简体中文
 
-从 Python 启动并跟踪本机 **Claude Code**、**Codex CLI**、**OpenCode**、**Cursor**、**Pi** 编码助手会话：纯启动计划、可审计运行、按会话 stdio MCP 接线，并自带 [agent-client-protocol](https://github.com/agentclientprotocol/agent-client-protocol)（ACP）适配器。
+从 Python 启动并跟踪本机 **Claude Code**、**Codex CLI**、**OpenCode**、**Cursor**、**Pi** 与 **Antigravity** 编码助手会话：纯启动计划、可审计运行、按会话 stdio MCP 接线，并自带 [agent-client-protocol](https://github.com/agentclientprotocol/agent-client-protocol)（ACP）适配器。
 
 这是 **Python 库 + JSON 命令行 + ACP 适配器**，不是终端界面、不是会话管理器、也不是历史解析器（历史观测委托给 [SessKit](https://github.com/x0c/sesskit)）。
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/x0c/agent-session-control/actions/workflows/ci.yml/badge.svg)](https://github.com/x0c/agent-session-control/actions/workflows/ci.yml)
 
-状态：0.1.1（见 [docs/INTEGRATION.md](docs/INTEGRATION.md) 与 [docs/CONTRACT.md](docs/CONTRACT.md)）。各运行时限制见下文。
+状态：0.1.2（见 [docs/INTEGRATION.md](docs/INTEGRATION.md) 与 [docs/CONTRACT.md](docs/CONTRACT.md)）。各运行时限制见下文。
 
 ## 安装
 
-请在项目的虚拟环境中，从 [PyPI](https://pypi.org/project/agent-session-control/0.1.1/) 安装固定版本。
+请在项目的虚拟环境中，从 [PyPI](https://pypi.org/project/agent-session-control/0.1.2/) 安装固定版本。
 
 需要 **Python 3.10–3.14（推荐 3.12）**。默认 tmux 后端运行于 **macOS 与 Linux**；Windows/WSL 不受支持。Homebrew 的 `python3` 可能是官方 `agent-client-protocol` SDK 不支持的 3.15——安装 `acp` extra 时请使用 3.10–3.14 解释器。
 
 ```bash
-VERSION=0.1.1
-SESSKIT=https://github.com/x0c/sesskit/releases/download/v0.2.21/sesskit-0.2.21-py3-none-any.whl
+VERSION=0.1.2
+SESSKIT=https://github.com/x0c/sesskit/releases/download/v0.3.2/sesskit-0.3.2-py3-none-any.whl
 
 # 仅核心：启动计划、存储、证据关联、JSON 命令行（仅标准库）。
 python -m pip install "agent-session-control==${VERSION}"
@@ -37,21 +37,22 @@ python -c "import agent_session_control; print(agent_session_control.__version__
 
 尚无虚拟环境时，先运行 `python3 -m venv .venv && . .venv/bin/activate`。
 
-GitHub 也提供相同的 [wheel 与源码归档](https://github.com/x0c/agent-session-control/releases/tag/v0.1.1)，并附有 SHA256 校验文件。
+GitHub 也提供相同的 [wheel 与源码归档](https://github.com/x0c/agent-session-control/releases/tag/v0.1.2)，并附有 SHA256 校验文件。
 
 ## 今日可用（已测试）
 
-- **纯启动计划**（`agent_session_control.runtime`）：五个内置运行时
-  （`claude`、`codex`、`opencode`、`cursor`、`pi`）的 `build_create_plan` /
-  `build_resume_plan`，以及第三方 `RuntimeProfile` 显式注册。计划是不可变
-  argv 数组——构造计划永不启动进程、修改存储、改全局配置或发起模型请求。
-  调用方默认值被保留（不传 model 就没有 `--model`，不传 `auto_approve`
-  就不放行审批）。不支持的选项在启动前直接失败，永不静默降级。
+- **纯启动计划**（`agent_session_control.runtime`）：六个内置运行时
+  （`claude`、`codex`、`opencode`、`cursor`、`pi`、`antigravity`）的
+  `build_create_plan` / `build_resume_plan`，以及第三方 `RuntimeProfile`
+  显式注册。计划是不可变 argv 数组——构造计划永不启动进程、修改存储、
+  改全局配置或发起模型请求。调用方默认值被保留（不传 model 就没有
+  `--model`，不传 `auto_approve` 就不放行审批）。不支持的选项在启动前
+  直接失败，永不静默降级。
 - **按会话 stdio MCP**（`mcp_servers=`）：`claude` / `codex` / `opencode`
   的已验证仅启动期通道，每条都用一次性 stdio fixture 对真实已安装 CLI
   做过端到端证明（未改全局配置）。密钥永不上 argv；真实值只走
-  `plan.env`，且不在任何展示投影中出现。`cursor` 与 `pi` 只从持久
-  配置文件读 MCP 服务，因此按启动配置会被诚实拒绝（`unsupported`）。
+  `plan.env`，且不在任何展示投影中出现。`cursor`、`pi` 与
+  `antigravity` 只从持久配置文件读 MCP 服务，因此按启动配置会被诚实拒绝（`unsupported`）。
 - **持久化审计运行**（`agent_session_control.store`）：`RunStore`，同一事务
   actor 审计、不可变幂等键、跨进程 `UNIQUE` 准入、按命名空间分库、
   可配置 root 与 supervisor 身份。只读访问永不创建存储。
@@ -68,7 +69,7 @@ GitHub 也提供相同的 [wheel 与源码归档](https://github.com/x0c/agent-s
 
 核心导入仅需标准库。可选 extra：
 
-- `history`：原生历史观测用 SessKit `>=0.2.21`。
+- `history`：原生历史观测用 SessKit `>=0.3.2`。
 - `acp`：ACP 适配器用官方 `agent-client-protocol >=0.12.1,<0.13`。
 
 ## 快速使用
@@ -139,7 +140,7 @@ JSON 命令行（stdout 为机器信封；ACP 拥有自己独立的 stdout）：
 
 ```sh
 python -m agent_session_control version --json
-# {"ok": true, "data": {"package": "agent-session-control", "version": "0.1.1", ...}, "error": null, "meta": {...}}
+# {"ok": true, "data": {"package": "agent-session-control", "version": "0.1.2", ...}, "error": null, "meta": {...}}
 
 python -m agent_session_control plan create --runtime codex --cwd /tmp/demo-proj --json
 # {"ok": true, "data": {"dry_run": true, "status": "planned",
@@ -165,14 +166,14 @@ python -m agent_session_control acp --runtime codex --root /tmp/demo-control --n
 
 ## 能力矩阵
 
-| 能力 | claude | codex | opencode | cursor | pi |
-|---|---|---|---|---|---|
-| 纯启动计划 | 有 | 有 | 有 | 有 | 有 |
-| 自有托管 + 存活 + 关闭（不发提示） | 有 | 有 | 有 | 有 | 有 |
-| 原生回合（需登录/配额，消耗配额） | 受限 | 受限 | 受限 | 受限 | 受限 |
-| 按会话 MCP 启动通道 | headless 已验证 | headless 已验证 | headless 已验证 | 拒绝 | 拒绝 |
-| 托管 TUI MCP 投递 | 待宿主运行 | 待宿主运行 | 仅启动方自有 | 拒绝（`unsupported`） | 拒绝（`unsupported`） |
-| 基于该运行时的 ACP 服务 | 有 | 有 | 有 | 仅 SDK/CLI | 仅 SDK/CLI |
+| 能力 | claude | codex | opencode | cursor | pi | antigravity |
+|---|---|---|---|---|---|---|
+| 纯启动计划 | 有 | 有 | 有 | 有 | 有 | 有 |
+| 自有托管 + 存活 + 关闭（不发提示） | 有 | 有 | 有 | 有 | 有 | 有 |
+| 原生回合（需登录/配额，消耗配额） | 受限 | 受限 | 受限 | 受限 | 受限 | 受限 |
+| 按会话 MCP 启动通道 | headless 已验证 | headless 已验证 | headless 已验证 | 拒绝 | 拒绝 | 拒绝 |
+| 托管 TUI MCP 投递 | 待宿主运行 | 待宿主运行 | 仅启动方自有 | 拒绝（`unsupported`） | 拒绝（`unsupported`） | 拒绝（`unsupported`） |
+| 基于该运行时的 ACP 服务 | 有 | 有 | 有 | 仅 SDK/CLI | 仅 SDK/CLI | 仅 SDK/CLI（`agy acp` 原生提供） |
 
 Headless 证明：对真实已安装 CLI 的一次性 stdio fixture
 （`claude -p`、`codex exec`、`opencode --standalone run`），未改全局配置。
@@ -182,12 +183,12 @@ Headless 证明：对真实已安装 CLI 的一次性 stdio fixture
 缺失的登录/配额会作为明确限制返回，不算通过。
 
 配套 Skill：使用本库的 agent 应安装
-[`agent-session-control`](https://github.com/x0c/agent-session-control/blob/v0.1.1/skills/agent-session-control/SKILL.md)
-（[`references/mcp.md`](https://github.com/x0c/agent-session-control/blob/v0.1.1/skills/agent-session-control/references/mcp.md)），
+[`agent-session-control`](https://github.com/x0c/agent-session-control/blob/v0.1.2/skills/agent-session-control/SKILL.md)
+（[`references/mcp.md`](https://github.com/x0c/agent-session-control/blob/v0.1.2/skills/agent-session-control/references/mcp.md)），
 随 wheel 发布于 `agent_session_control/skills/agent-session-control`：
 
 ```sh
-npx skills add x0c/agent-session-control@v0.1.1 --skill agent-session-control
+npx skills add x0c/agent-session-control@v0.1.2 --skill agent-session-control
 ```
 
 该 Skill 只教授既有 JSON CLI 生命周期（plan/host/observe/release），不新增生命周期。
@@ -196,13 +197,13 @@ npx skills add x0c/agent-session-control@v0.1.1 --skill agent-session-control
 
 | 工具 | 角色 | 关系 |
 |---|---|---|
-| [SessKit](https://github.com/x0c/sesskit) | 原生历史观测（`history` extra，固定 wheel `v0.2.21`） | 以显式固定安装消费；永不 vendored |
+| [SessKit](https://github.com/x0c/sesskit) | 原生历史观测（`history` extra，固定 wheel `v0.3.2`） | 以显式固定安装消费；永不 vendored |
 | [agent-client-protocol](https://github.com/agentclientprotocol/agent-client-protocol) | ACP 线协议 + Python SDK（`acp` extra，`>=0.12.1,<0.13`） | 从 PyPI 消费；适配器每次调用服务一个运行时 |
 | `tmux` | 默认终端后端（macOS/Linux） | 外部依赖；CI 按 OS 安装 |
 
 ## 局限
 
-- Cursor 与 Pi 只从持久配置文件读 MCP 服务，按会话 `mcp_servers=` 会以 `unsupported` 在启动前直接拒绝，不静默丢弃。
+- Cursor、Pi 与 Antigravity 只从持久配置文件读 MCP 服务，按会话 `mcp_servers=` 会以 `unsupported` 在启动前直接拒绝，不静默丢弃；`agy acp` 由 `agy` CLI 原生提供。
 - OpenCode 按会话 MCP 仅当启动方拥有 server 时生效，常驻后台服务会忽略它。
 - `completed` 只表示关联回合结束，不表示任务通过验收；缺失用量保持 `null`。
 - 真实控制会消耗模型配额，需要可执行文件与登录。一次性项目/状态目录只隔离控制状态：托管仍可能在运行时标准位置留下原生历史，`close_session` 永不删除原生历史。

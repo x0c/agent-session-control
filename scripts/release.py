@@ -28,8 +28,8 @@ import zipfile
 from pathlib import Path
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-EXPECTED_VERSION = "0.1.1"
-SESSKIT_WHEEL_URL = "https://github.com/x0c/sesskit/releases/download/v0.2.21/sesskit-0.2.21-py3-none-any.whl"
+EXPECTED_VERSION = "0.1.2"
+SESSKIT_WHEEL_URL = "https://github.com/x0c/sesskit/releases/download/v0.3.2/sesskit-0.3.2-py3-none-any.whl"
 
 
 def run(label: str, *argv: str, cwd: str = ROOT) -> None:
@@ -64,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
         _clean_extra_install(os.path.join(dist, wheel))
     print(f"release artifacts ready: dist/{wheel} dist/{sdist}", flush=True)
     print(
-        "handoff (coordinator-owned): create tag v0.1.1, create GitHub Release "
+        "handoff (coordinator-owned): create tag v0.1.2, create GitHub Release "
         "from that tag attaching dist/*, then run the Trusted Publisher workflow "
         "(.github/workflows/publish.yml). This script performed no upload/tag/push.",
         flush=True,
@@ -73,7 +73,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _parse(argv: list[str] | None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Prepare and verify 0.1.1 release artifacts locally.")
+    parser = argparse.ArgumentParser(description="Prepare and verify 0.1.2 release artifacts locally.")
     parser.add_argument(
         "--extras",
         action="store_true",

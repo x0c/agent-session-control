@@ -62,6 +62,7 @@ is earned afterwards through exact evidence (see below).
 | opencode | Escape, Escape | opencode_bars | none (`model_selection_unsupported`) | `-s <exact-id>` | marker evidence or host claim |
 | cursor | C-c | cursor_arrow | `--model` | `--resume <exact-id>` | marker evidence or host claim |
 | pi | Escape | between_rules | `--model` | `--session <exact-path>` | path-addressed claim or marker evidence |
+| antigravity | Escape | antigravity (`between_rules` layout) | `--model` | `--conversation <exact-id>` | marker evidence or host claim |
 
 `capabilities()` reports these honestly per profile: `steer` is false for
 every built-in (no true steering in the generic backend), `interrupt`
@@ -69,6 +70,17 @@ reflects the key table, `model_selection` reflects the flag table, MCP is
 `unsupported` unless a profile declares `supports_mcp`, `resume` states its
 exact-locator requirement, `load_history` requires a bound native history.
 Availability means executable presence only, never login or quota.
+
+Antigravity (`agy`) empirical limits (`1.5.8` probed in a disposable workspace):
+`--settings` accepts `settings.json` keys only and rejects `mcpServers`
+(`Error: --settings: unknown setting "mcpServers"`, exit 1); MCP servers come
+only from persistent `mcp_config.json` files (`~/.gemini/config/mcp_config.json`,
+`.agents/mcp_config.json`), so `antigravity` declares `MCP_CHANNEL_UNSUPPORTED`.
+First launch in an untrusted workspace presents a keyboard-owning prompt whose
+footer reads `↑/↓ Navigate · enter Confirm`, caught by `blocked_input_cause`.
+`agy acp` exists natively on the `agy` CLI, whereas `agent-session-control acp`
+requires per-session stdio MCP injection and refuses `antigravity` before
+serving.
 
 ## Host injection hooks
 
@@ -137,7 +149,7 @@ re-enter it either.
 
 ## SessKit observation
 
-Used public surface only (verified against SessKit 0.2.21): `load_activity`,
+Used public surface only (verified against SessKit 0.3.2): `load_activity`,
 `open_activity_reader` (+ `poll()` → `events/reset/generation/cursor/
 outcome/state`), `derive_turns(snapshot, runtime=...)`, exact-id scans with
 `keep_ids`, and `load_session_conversation` for marker-evidence binding.
@@ -293,8 +305,10 @@ applies the bound). No second projection algorithm lives in the engine.
   check` are clean; owned pytest files pass warning-clean (`-W error`).
 - Explicitly **not** established here: Claude turns (account weekly quota
   exhausted until Nov 1 — verified on-pane; no inference possible),
-  OpenCode/Cursor/Pi live turns (not probed with models; executables
-  present, logins unverified), Windows or non-tmux platforms,
+  OpenCode/Cursor/Pi/Antigravity live turns (not probed with models;
+  executables present, logins unverified; Antigravity composer/trust/CLI
+  flags probed in a disposable workspace without model calls), Windows or
+  non-tmux platforms,
   hostile-tenant isolation, and billing/cost semantics. Replay and final
   responses are lossless by default through foundation `project_event` /
   `build_result(..., text_limit=None)` (verified live). Unsupported paths

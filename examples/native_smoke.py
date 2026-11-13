@@ -2,7 +2,7 @@
 
 Runs OUTSIDE both repos against the installed (non-editable) wheel:
 
-1. pure launch plans for all five active runtimes;
+1. pure launch plans for all six active runtimes;
 2. production ``LocalController`` create, liveness read and close per
    available runtime (no prompt is ever sent: hosting evidence needs no
    model, login or quota; unavailable executables and login/quota gaps are
@@ -37,7 +37,7 @@ import time
 import uuid
 from pathlib import Path
 
-RUNTIMES = ("claude", "codex", "opencode", "cursor", "pi")
+RUNTIMES = ("claude", "codex", "opencode", "cursor", "pi", "antigravity")
 LEG_TIMEOUT = 90.0
 
 
@@ -232,7 +232,14 @@ def main(argv: list[str] | None = None) -> int:
         native = {}
         for rid in wanted:
             if not shutil.which(
-                {"claude": "claude", "codex": "codex", "opencode": "opencode", "cursor": "agent", "pi": "pi"}[rid]
+                {
+                    "claude": "claude",
+                    "codex": "codex",
+                    "opencode": "opencode",
+                    "cursor": "agent",
+                    "pi": "pi",
+                    "antigravity": "agy",
+                }[rid]
             ):
                 native[rid] = {"runtime": rid, "skipped": "executable not installed"}
                 continue

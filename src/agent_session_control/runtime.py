@@ -48,7 +48,7 @@ from agent_session_control.errors import (
 )
 from agent_session_control.models import RESOURCE_LINK_BLOCK, TEXT_BLOCK
 
-BUILTIN_RUNTIME_IDS = ("claude", "codex", "opencode", "cursor", "pi")
+BUILTIN_RUNTIME_IDS = ("claude", "codex", "opencode", "cursor", "pi", "antigravity")
 
 
 @dataclass(frozen=True)
@@ -436,6 +436,21 @@ def _builtin_profiles() -> list[RuntimeProfile]:
                 "per-launch MCP configuration is unsupported and refused.",
             ),
         ),
+        RuntimeProfile(
+            id="antigravity",
+            display_name="Antigravity",
+            executable="agy",
+            interrupt_keys=("Escape",),
+            model_flag="--model",
+            auto_approve_args=("--dangerously-skip-permissions",),
+            composer_parser="antigravity",
+            limitations=(
+                "MCP servers come only from persistent mcp_config.json files; "
+                "--settings rejects mcpServers, so per-launch MCP configuration is unsupported and refused.",
+                "Untrusted workspaces show a confirmation prompt on first launch; "
+                "trust the workspace before automated pane input.",
+            ),
+        ),
     ]
 
 
@@ -480,7 +495,7 @@ class RuntimeRegistry:
 
 
 def default_registry() -> RuntimeRegistry:
-    """Registry with the initial five built-ins. No dormant runtime is included."""
+    """Registry with the built-in runtimes. No dormant runtime is included."""
     return RuntimeRegistry(_builtin_profiles())
 
 
@@ -502,7 +517,7 @@ def _mcp_parts(profile: RuntimeProfile, mcp_servers: Iterable[Any]) -> tuple[lis
             f"Runtime {profile.id!r} has no verified per-session MCP configuration path; "
             "refusing to launch rather than dropping the servers silently.",
             hint="Omit mcp_servers to inherit the runtime's own configuration. "
-            "Cursor and Pi only read persistent config files, which this library never writes.",
+            "Cursor, Pi, and Antigravity only read persistent config files, which this library never writes.",
         )
     if profile.mcp_channel == MCP_CHANNEL_ENV:
         if not profile.mcp_target or profile.mcp_encode is None:
@@ -634,6 +649,15 @@ def _resume_argv(
             hint="Copy the full path from search or show output.",
         )
         return [profile.executable, *approve, *extra_args, "--session", path]
+    if profile.id == "antigravity":
+        native_id = _exact_id(
+            session,
+            "id",
+            what=(
+                "Resume needs the exact native conversation id for antigravity; refusing to start a blank replacement."
+            ),
+        )
+        return [profile.executable, *approve, *extra_args, "--conversation", native_id]
     # Third-party profiles: exact id resume is the only generic semantic.
     native_id = _exact_id(
         session, "id", what="Resume needs the exact native session id; refusing to start a blank replacement."
@@ -819,6 +843,7 @@ def _composer_cursor(screen: str) -> str | None:
 
 _COMPOSER_PARSERS: dict[str, Callable[[str], str | None]] = {
     "between_rules": _composer_between_rules,
+    "antigravity": _composer_between_rules,
     "codex_chevron": _composer_codex,
     "opencode_bars": _composer_opencode,
     "cursor_arrow": _composer_cursor,

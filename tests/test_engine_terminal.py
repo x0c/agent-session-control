@@ -67,7 +67,15 @@ def test_blocked_dialog_guard_refuses_keyboard_owned_panes():
             "  Enter to confirm \u00b7 Esc to cancel",
         ]
     )
+    agy_trust = "\n".join(
+        [
+            "Do you trust the files in this folder?",
+            "  1. Yes, trust this workspace",
+            "  ↑/↓ Navigate · enter Confirm",
+        ]
+    )
     assert blocked_input_cause(trust) is not None
+    assert blocked_input_cause(agy_trust) is not None
     assert blocked_input_cause("❯ hello\nsome output") is None
     assert blocked_input_cause(None) is None
     assert blocked_input_cause("") is None
@@ -325,3 +333,68 @@ def test_close_dead_owned_pane_forgets_record(tmp_path):
     assert backend.close(pane) is True
     assert backend.registry.lookup(pane) is None
     backend._run("kill-server")
+
+
+@needs_tmux
+@pytest.mark.skipif(shutil.which("agy") is None, reason="agy is not installed")
+def test_antigravity_disposable_tmux_composer_probe(tmp_path):
+    """Host real ``agy`` in an isolated tmux socket without mutating user settings or sending prompts."""
+    import hashlib
+    import json
+    from pathlib import Path
+
+    from agent_session_control.runtime import build_create_plan, composer_region
+    from agent_session_control.terminal import plain_text
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / ".sesskit-ignore").write_text("", encoding="utf-8")
+
+    settings_path = Path.home() / ".gemini" / "antigravity-cli" / "settings.json"
+    before_hash = hashlib.sha256(settings_path.read_bytes()).hexdigest() if settings_path.is_file() else None
+
+    plan = build_create_plan(
+        "antigravity",
+        str(proj),
+        auto_approve=False,
+        extra_args=("--settings", json.dumps({"trustedWorkspaces": [str(proj.resolve()), str(proj)]})),
+    )
+    backend = make_backend(tmp_path, namespace="agy-probe")
+    pane = backend.host(plan.argv, runtime="antigravity", cwd=str(proj), ident=backend.new_ident())
+    try:
+        deadline = time.monotonic() + 20.0
+        region = None
+        while time.monotonic() < deadline:
+            screen = plain_text(backend.capture(pane))
+            region = composer_region("antigravity", screen)
+            if region is not None and region.lstrip().startswith(">"):
+                break
+            time.sleep(0.3)
+        assert region is not None and region.lstrip().startswith(">"), (
+            f"composer not ready: {plain_text(backend.capture(pane))!r}"
+        )
+        assert blocked_input_cause(backend.capture(pane)) is None
+        pasted = backend.paste_detailed(pane, "draft probe")
+        assert pasted.ok, pasted
+        hold_deadline = time.monotonic() + 5.0
+        holds = False
+        while time.monotonic() < hold_deadline:
+            holds = bool(
+                backend.composer_holds(
+                    lambda s: composer_region("antigravity", s),
+                    backend.capture(pane),
+                    "draft probe",
+                )
+            )
+            if holds:
+                break
+            time.sleep(0.2)
+        assert holds, f"pasted text not reflected in composer: {plain_text(backend.capture(pane))!r}"
+        updated = composer_region("antigravity", plain_text(backend.capture(pane)))
+        assert updated is not None and "draft probe" in updated
+    finally:
+        assert backend.close(pane) is True
+        backend._run("kill-server")
+    assert backend.liveness(pane) == "dead"
+    after_hash = hashlib.sha256(settings_path.read_bytes()).hexdigest() if settings_path.is_file() else None
+    assert after_hash == before_hash

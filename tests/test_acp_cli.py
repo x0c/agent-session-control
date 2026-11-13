@@ -118,7 +118,7 @@ def test_pkg_version_falls_back_to_canonical_without_optional_deps(monkeypatch: 
 
     Simulates an unpackaged tree (``PackageNotFoundError`` from
     ``importlib.metadata``): ``_pkg_version()`` must return the canonical
-    ``agent_session_control.__version__`` (currently 0.1.1, never a
+    ``agent_session_control.__version__`` (currently 0.1.2, never a
     divergent literal) without importing optional dependencies. Runs
     in-process and offline: no subprocess, no model, no network.
     """
@@ -126,7 +126,7 @@ def test_pkg_version_falls_back_to_canonical_without_optional_deps(monkeypatch: 
 
     from agent_session_control import __version__ as canonical
 
-    assert canonical == "0.1.1"
+    assert canonical == "0.1.2"
 
     def _missing(_name: str) -> str:
         raise importlib.metadata.PackageNotFoundError("not installed")
@@ -171,7 +171,7 @@ def test_doctor_offline_and_never_writes(tmp_path: Path) -> None:
     body = envelope(proc)
     assert body["data"]["engine"] == "available"
     assert body["data"]["extras"]["acp"] == "installed"
-    assert len(body["data"]["runtimes"]) == 5
+    assert len(body["data"]["runtimes"]) == 6
     assert list(tmp_path.iterdir()) == before
 
 
@@ -468,9 +468,9 @@ def test_packaged_acp_entry_handshake_only(tmp_path: Path) -> None:
     asyncio.run(go())
 
 
-@pytest.mark.parametrize("runtime", ["cursor", "pi"])
+@pytest.mark.parametrize("runtime", ["cursor", "pi", "antigravity"])
 def test_packaged_acp_entry_refuses_non_baseline_runtimes(tmp_path: Path, runtime: str) -> None:
-    """Packaged ``acp`` entry refuses ``cursor``/``pi`` before serving.
+    """Packaged ``acp`` entry refuses ``cursor``/``pi``/``antigravity`` before serving.
 
     The stdio MCP baseline gate (``require_stdio_mcp_baseline``) rejects
     runtimes whose ``capabilities(runtime)["mcp"] != "supported"`` before

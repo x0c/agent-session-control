@@ -1,6 +1,6 @@
 # Integration
 
-Status: 0.1.1. This guide covers what consumers can adopt today and the
+Status: 0.1.2. This guide covers what consumers can adopt today and the
 exact tested limits.
 
 ## Fixed-version installation
@@ -10,8 +10,8 @@ backend runs on macOS and Linux; Windows/WSL are not supported (see
 platform limits below). Core needs only the standard library.
 
 ```sh
-VERSION=0.1.1
-SESSKIT=https://github.com/x0c/sesskit/releases/download/v0.2.21/sesskit-0.2.21-py3-none-any.whl
+VERSION=0.1.2
+SESSKIT=https://github.com/x0c/sesskit/releases/download/v0.3.2/sesskit-0.3.2-py3-none-any.whl
 
 # Core only (launch plans, store, correlation, JSON CLI): no extras.
 pip install "agent-session-control==${VERSION}"
@@ -30,7 +30,7 @@ that URL is this repository's `pyproject.toml`):
 
 ```toml
 [tool.uv.sources]
-sesskit = { url = "https://github.com/x0c/sesskit/releases/download/v0.2.21/sesskit-0.2.21-py3-none-any.whl" }
+sesskit = { url = "https://github.com/x0c/sesskit/releases/download/v0.3.2/sesskit-0.3.2-py3-none-any.whl" }
 ```
 
 The final dependency handoff is these versioned artifacts, never an
@@ -131,15 +131,15 @@ Plan generation, hosting, native turns, hosted MCP delivery, and
 protocol evidence are separate claims. One passing does not imply the
 others.
 
-| Capability | claude | codex | opencode | cursor | pi |
-|---|---|---|---|---|---|
-| Pure launch/resume plans | yes | yes | yes | yes | yes |
-| Owned tmux hosting + liveness + close (no prompt) | yes | yes | yes | yes | yes |
-| Native turn settlement (login/quota-gated, spends quota) | gated | gated | gated | gated | gated |
-| Per-session MCP launch channel | headless-verified | headless-verified | headless-verified | refused (`unsupported`) | refused (`unsupported`) |
-| Hosted TUI MCP delivery | pending host run | pending host run | launcher-owned only | refused (`unsupported`) | refused (`unsupported`) |
-| Native history observation (needs `history` extra) | via SessKit | via SessKit | via SessKit | via SessKit | via SessKit |
-| ACP serving over this runtime | yes | yes | yes | SDK/CLI only | SDK/CLI only |
+| Capability | claude | codex | opencode | cursor | pi | antigravity |
+|---|---|---|---|---|---|---|
+| Pure launch/resume plans | yes | yes | yes | yes | yes | yes |
+| Owned tmux hosting + liveness + close (no prompt) | yes | yes | yes | yes | yes | yes |
+| Native turn settlement (login/quota-gated, spends quota) | gated | gated | gated | gated | gated | gated |
+| Per-session MCP launch channel | headless-verified | headless-verified | headless-verified | refused (`unsupported`) | refused (`unsupported`) | refused (`unsupported`) |
+| Hosted TUI MCP delivery | pending host run | pending host run | launcher-owned only | refused (`unsupported`) | refused (`unsupported`) | refused (`unsupported`) |
+| Native history observation (needs `history` extra) | via SessKit | via SessKit | via SessKit | via SessKit | via SessKit | via SessKit |
+| ACP serving over this runtime | yes | yes | yes | SDK/CLI only | SDK/CLI only | SDK/CLI only (`agy acp` native) |
 
 Native turns always need the runtime executable plus login/quota and
 spend model quota. Final capability truth for the ACP adapter and the
@@ -171,13 +171,13 @@ Rules consumers must keep:
 - `auto_approve=False` (the default) adds no approval relaxation. Pass
   `auto_approve=True` only when the host's explicit policy allows it.
 - Resume needs the exact native identity (`id` for claude/codex/opencode/
-  cursor, `path` for pi). Missing identity raises instead of starting a
-  blank replacement conversation.
+  cursor/antigravity, `path` for pi). Missing identity raises instead of
+  starting a blank replacement conversation.
 - Unsupported options raise `ControlError` before launch: unknown runtimes,
   `--model` on OpenCode, preassigned native ids where no flag exists, and
-  `mcp_servers` on cursor/pi (per-launch MCP is refused as `unsupported`
-  there; claude/codex/opencode use the verified launch-only channels
-  below). MCP configuration is per-session/process and private:
+  `mcp_servers` on cursor/pi/antigravity (per-launch MCP is refused as
+  `unsupported` there; claude/codex/opencode use the verified launch-only
+  channels below). MCP configuration is per-session/process and private:
   `LaunchPlan.env` values are redacted from `repr` and excluded from the
   default JSON projection.
 - Third-party runtimes register an explicit `RuntimeProfile`; behavior is
@@ -336,7 +336,7 @@ stays protocol messages only; CLI envelopes never enter it.
 
 ```sh
 python -m agent_session_control version --json
-# {"ok": true, "data": {"package": "agent-session-control", "version": "0.1.1", ...}, "error": null, "meta": {...}}
+# {"ok": true, "data": {"package": "agent-session-control", "version": "0.1.2", ...}, "error": null, "meta": {...}}
 
 python -m agent_session_control plan create --runtime codex --cwd /tmp/demo-proj --json
 # {"ok": true, "data": {"dry_run": true, "status": "planned",
@@ -410,11 +410,11 @@ observation repeated by overlapping evidence ranges counts once
 ## Clean external consumer (acceptance shape)
 
 ```sh
-VERSION=0.1.1
+VERSION=0.1.2
 BASE=https://github.com/x0c/agent-session-control/releases/download/v${VERSION}
 CASE="$(mktemp -d "${TMPDIR:-/tmp}/asc-consumer-XXXXXX")"
 python -m venv "${CASE}/consumer-venv" && "${CASE}/consumer-venv/bin/pip" install \
-  "sesskit @ https://github.com/x0c/sesskit/releases/download/v0.2.21/sesskit-0.2.21-py3-none-any.whl" \
+  "sesskit @ https://github.com/x0c/sesskit/releases/download/v0.3.2/sesskit-0.3.2-py3-none-any.whl" \
   "agent-session-control[history,acp] @ ${BASE}/agent_session_control-${VERSION}-py3-none-any.whl"
 "${CASE}/consumer-venv/bin/python" - <<'EOF'
 import tempfile

@@ -42,9 +42,10 @@ def test_launch_plan_immutable_and_redacted():
     assert plan.to_dict(include_env=True)["env"] == {"TOKEN": "secret"}
 
 
-def test_default_registry_has_five_builtins_no_kimi():
+def test_default_registry_has_six_builtins_no_kimi():
     registry = default_registry()
-    assert registry.ids == ("claude", "codex", "opencode", "cursor", "pi")
+    assert registry.ids == ("claude", "codex", "opencode", "cursor", "pi", "antigravity")
+    assert registry.resolve("antigravity") == "antigravity"
     assert registry.resolve("cursor-agent") == "cursor"
     assert registry.resolve("agent") == "cursor"
     assert registry.resolve("kimi") is None
@@ -68,10 +69,13 @@ def test_create_plans_exact_argv_auto_approve(tmp_path):
     pi = build_create_plan("pi", cwd, auto_approve=True).argv
     assert pi == ("pi", "--approve")
 
+    antigravity = build_create_plan("antigravity", cwd, auto_approve=True).argv
+    assert antigravity == ("agy", "--dangerously-skip-permissions")
+
 
 def test_create_plans_preserve_defaults(tmp_path):
     cwd = str(tmp_path)
-    for runtime in ("claude", "codex", "opencode", "cursor", "pi"):
+    for runtime in ("claude", "codex", "opencode", "cursor", "pi", "antigravity"):
         argv = build_create_plan(runtime, cwd).argv
         assert "--model" not in argv
         assert not any(a.startswith("--dangerously") or a in ("--auto", "--approve", "--force") for a in argv)
@@ -111,12 +115,21 @@ def test_resume_plans_exact_positions(tmp_path):
     assert pi_plan.argv == ("pi", "--approve", "--session", "/hist/pi.jsonl")
     assert "short" not in pi_plan.argv
 
+    assert build_resume_plan("antigravity", {"id": "abc", "cwd": str(tmp_path)}, auto_approve=True).argv == (
+        "agy",
+        "--dangerously-skip-permissions",
+        "--conversation",
+        "abc",
+    )
+
 
 def test_resume_fails_rather_than_blank_replacement(tmp_path):
     with pytest.raises(ControlError):
         build_resume_plan("claude", {"cwd": str(tmp_path)})
     with pytest.raises(ControlError):
         build_resume_plan("pi", {"id": "short", "cwd": str(tmp_path)})
+    with pytest.raises(ControlError):
+        build_resume_plan("antigravity", {"cwd": str(tmp_path)})
     not_a_mapping: Any = "not-a-mapping"
     with pytest.raises(ControlError):
         build_resume_plan("codex", not_a_mapping)
@@ -132,12 +145,14 @@ def test_model_selection_behavior(tmp_path):
     assert argv[-2:] == ("--model", "sonnet")
     argv = build_create_plan("pi", cwd, model="provider/model").argv
     assert argv[-2:] == ("--model", "provider/model")
+    argv = build_create_plan("antigravity", cwd, model="gemini-2.5-pro").argv
+    assert argv[-2:] == ("--model", "gemini-2.5-pro")
     # OpenCode has no verified per-launch model flag: fail, never fall back.
     with pytest.raises(ControlError) as exc:
         build_create_plan("opencode", cwd, model="anything")
     assert exc.value.code == "model_selection_unsupported"
     # Omitted model inherits runtime defaults: no flag anywhere.
-    for runtime in ("claude", "codex", "cursor", "pi"):
+    for runtime in ("claude", "codex", "cursor", "pi", "antigravity"):
         assert "--model" not in build_create_plan(runtime, cwd).argv
 
 
@@ -154,8 +169,8 @@ def test_unsupported_runtime_and_options(tmp_path):
     with pytest.raises(ControlError) as exc:
         build_create_plan("kimi", cwd)
     assert exc.value.code == "unsupported"
-    # Cursor/Pi only read persistent config files: per-launch servers refused.
-    for refused in ("cursor", "pi"):
+    # Cursor/Pi/Antigravity only read persistent config files: per-launch servers refused.
+    for refused in ("cursor", "pi", "antigravity"):
         with pytest.raises(ControlError) as exc:
             build_create_plan(refused, cwd, mcp_servers=[{"name": "s", "command": "/bin/echo"}])
         assert exc.value.code == "unsupported"
@@ -171,7 +186,7 @@ def test_native_id_and_session_id_flag_matrix(tmp_path):
     cwd = str(tmp_path)
     profiles = {p.id: p for p in default_registry()}
     assert profiles["claude"].session_id_flag == "--session-id"
-    for runtime in ("opencode", "cursor", "pi", "codex"):
+    for runtime in ("opencode", "cursor", "pi", "codex", "antigravity"):
         assert profiles[runtime].session_id_flag is None
         with pytest.raises(ControlError):
             build_create_plan(runtime, cwd, native_id="x")
@@ -370,7 +385,9 @@ def test_mcp_profile_descriptor():
     assert runtime_profile("opencode")["mcp"] == {"channel": "env", "target": "OPENCODE_CONFIG_CONTENT"}
     assert runtime_profile("cursor")["mcp"] is None
     assert runtime_profile("pi")["mcp"] is None
+    assert runtime_profile("antigravity")["mcp"] is None
     assert runtime_profile("cursor")["mcp_configuration"] is False
+    assert runtime_profile("antigravity")["mcp_configuration"] is False
 
 
 def test_runtime_profile_json_and_availability():
@@ -381,15 +398,31 @@ def test_runtime_profile_json_and_availability():
     assert profile["model_selection"] is True
     assert isinstance(profile["available"], bool)
     assert profile["available"] == is_available("cursor")
+    agy_profile = runtime_profile("antigravity")
+    assert agy_profile["executable"] == "agy"
+    assert agy_profile["executable_aliases"] == []
+    assert agy_profile["interrupt_keys"] == ["Escape"]
+    assert agy_profile["model_selection"] is True
+    assert isinstance(agy_profile["available"], bool)
+    assert agy_profile["available"] == is_available("antigravity")
     assert json.dumps(profile)
+    assert json.dumps(agy_profile)
     assert json.dumps(describe_runtimes())
-    assert {p["id"] for p in describe_runtimes()} == {"claude", "codex", "opencode", "cursor", "pi"}
+    assert {p["id"] for p in describe_runtimes()} == {
+        "claude",
+        "codex",
+        "opencode",
+        "cursor",
+        "pi",
+        "antigravity",
+    }
 
 
 def test_interrupt_keys_per_runtime():
     assert runtime_profile("claude")["interrupt_keys"] == ["Escape"]
     assert runtime_profile("opencode")["interrupt_keys"] == ["Escape", "Escape"]
     assert runtime_profile("pi")["interrupt_keys"] == ["Escape"]
+    assert runtime_profile("antigravity")["interrupt_keys"] == ["Escape"]
 
 
 def test_composer_regions():
@@ -397,6 +430,18 @@ def test_composer_regions():
     screen = f"transcript\n{rule}\n  draft here\n{rule}\nfooter"
     assert composer_region("claude", screen) == "  draft here"
     assert composer_region("pi", screen) == "  draft here"
+    assert composer_region("antigravity", screen) == "  draft here"
+    agy_popup_screen = "\n".join(
+        [
+            "─" * 80,
+            "> /",
+            "─" * 80,
+            "> /add-dir  Add working directory",
+            "  ↑/↓ Navigate · enter Select · tab Complete",
+        ]
+    )
+    assert composer_region("antigravity", agy_popup_screen) == "> /"
+    assert composer_region("antigravity", "no rules here") is None
     assert composer_region("claude", "no rules here") is None
     assert composer_region("opencode", "┃ prompt") == "┃ prompt"
     assert composer_region("opencode", "plain") is None

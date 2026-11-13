@@ -32,8 +32,8 @@ import zipfile
 from pathlib import Path
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SESSKIT_WHEEL_URL = "https://github.com/x0c/sesskit/releases/download/v0.2.21/sesskit-0.2.21-py3-none-any.whl"
-EXPECTED_VERSION = "0.1.1"
+SESSKIT_WHEEL_URL = "https://github.com/x0c/sesskit/releases/download/v0.3.2/sesskit-0.3.2-py3-none-any.whl"
+EXPECTED_VERSION = "0.1.2"
 
 
 def run(label: str, *argv: str, cwd: str = ROOT, env: dict | None = None) -> None:

@@ -489,14 +489,14 @@ def test_doctor_readonly(tmp_path: Path) -> None:
     assert proc.returncode == 0
     data = body(proc)["data"]
     assert data["engine"] == "available"
-    assert len(data["runtimes"]) == 5
+    assert len(data["runtimes"]) == 6
     assert sorted(p.name for p in tmp_path.iterdir()) == before
 
 
 def test_acp_baseline_refusal_is_stderr_not_protocol(tmp_path: Path) -> None:
-    """Honest serving restriction: cursor/pi fail before the ACP connection.
+    """Honest serving restriction: cursor/pi/antigravity fail before the ACP connection.
 
-    SDK/CLI control covers five runtimes; ACP serving requires the stdio
+    SDK/CLI control covers six runtimes; ACP serving requires the stdio
     MCP baseline (claude/codex/opencode). A refused serve entry keeps
     stdout protocol-clean and reports on stderr with exit 2.
     """

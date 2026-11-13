@@ -60,7 +60,7 @@ _COMPOSER_MARKER_CHARS = 24
 # prompts) owns the keyboard: pasted text plus Enter would answer it instead
 # of reaching the agent. This is generic terminal-input safety, not product
 # UI: any backend must refuse to type into such a pane.
-_BLOCKING_DIALOG_RE = re.compile(r"\benter to confirm\b", re.IGNORECASE)
+_BLOCKING_DIALOG_RE = re.compile(r"\benter\s+(?:to\s+)?confirm\b", re.IGNORECASE)
 _DIALOG_FOOTER_LINES = 6
 
 

@@ -21,8 +21,8 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[1]
-EXPECTED_VERSION = "0.1.1"
-SESSKIT_WHEEL_URL = "https://github.com/x0c/sesskit/releases/download/v0.2.21/sesskit-0.2.21-py3-none-any.whl"
+EXPECTED_VERSION = "0.1.2"
+SESSKIT_WHEEL_URL = "https://github.com/x0c/sesskit/releases/download/v0.3.2/sesskit-0.3.2-py3-none-any.whl"
 
 
 def _read_version_from_pyproject() -> str:

@@ -71,9 +71,9 @@ root (`$ROOT`), never generic shared names like `/tmp/*.json`.
 
 ## Refusals
 
-- `cursor` and `pi` have no verified per-launch MCP path: any servers
-  are refused as `unsupported` (exit 2). Their SDK/CLI control is
-  unaffected.
+- `cursor`, `pi`, and `antigravity` have no verified per-launch MCP
+  path: any servers are refused as `unsupported` (exit 2). Their
+  SDK/CLI control is unaffected.
 - Malformed JSON, non-array payload, bad entry shape, duplicate
   names, or unreadable/empty file: `usage_error` (exit 2) with no
   secret values in the message.

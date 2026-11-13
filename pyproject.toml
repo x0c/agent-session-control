@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-session-control"
-version = "0.1.1"
+version = "0.1.2"
 description = "Reusable coding-agent session control: pure launch plans, durable audited runs, and evidence correlation."
 readme = "README.md"
 requires-python = ">=3.10,<3.15"
@@ -29,10 +29,10 @@ dependencies = []
 Homepage = "https://github.com/x0c/agent-session-control"
 Repository = "https://github.com/x0c/agent-session-control.git"
 Documentation = "https://github.com/x0c/agent-session-control/blob/main/docs/INTEGRATION.md"
-Changelog = "https://github.com/x0c/agent-session-control/blob/main/scripts/release-notes/0.1.1.md"
+Changelog = "https://github.com/x0c/agent-session-control/blob/main/scripts/release-notes/0.1.2.md"
 
 [project.optional-dependencies]
-history = ["sesskit>=0.2.21"]
+history = ["sesskit>=0.3.2"]
 acp = ["agent-client-protocol>=0.12.1,<0.13"]
 
 [project.scripts]
@@ -50,7 +50,7 @@ dev = [
 ]
 
 [tool.uv.sources]
-sesskit = { url = "https://github.com/x0c/sesskit/releases/download/v0.2.21/sesskit-0.2.21-py3-none-any.whl" }
+sesskit = { url = "https://github.com/x0c/sesskit/releases/download/v0.3.2/sesskit-0.3.2-py3-none-any.whl" }
 
 [tool.hatch.build.targets.wheel.force-include]
 "skills/agent-session-control" = "agent_session_control/skills/agent-session-control"

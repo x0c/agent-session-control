@@ -2,7 +2,7 @@
 
 Pure-function tests (markers, wire prompts, correlation, results) always run.
 SessKit-backed tests run only when SessKit is importable (the extraction
-source's checkout venv supplies 0.2.21); they use synthetic in-memory models,
+source's checkout venv supplies 0.3.2); they use synthetic in-memory models,
 never real user histories.
 """
 

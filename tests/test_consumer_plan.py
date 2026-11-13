@@ -17,7 +17,7 @@ from pathlib import Path
 
 from agent_session_control import runtime as rt
 
-BUILTINS = ("claude", "codex", "opencode", "cursor", "pi")
+BUILTINS = ("claude", "codex", "opencode", "cursor", "pi", "antigravity")
 
 
 def _assert_refuses(testcase: unittest.TestCase, func, *args, **kwargs):

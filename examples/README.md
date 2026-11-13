@@ -4,7 +4,7 @@ Independent non-host consumers using only the installed public
 `agent_session_control` API.
 
 - [`basic_control.py`](basic_control.py): pure launch plans for all
-  five runtimes plus captured CLI envelopes by default (free, offline).
+  six runtimes plus captured CLI envelopes by default (free, offline).
   With `--live`: durable create/send/observe/cancel/resume, restart
   recovery on the same root/namespace, and the optional ACP entry check.
   The live turn spends model quota and needs the selected runtime's

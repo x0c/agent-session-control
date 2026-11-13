@@ -1,12 +1,12 @@
 # Shared implementation contract
 
-Status: implementation boundary for 0.1.0, 2026-10-30; verified by the
+Status: implementation boundary for 0.1.2 (with Antigravity built-in support), 2026-11-14; verified by the
 release gate (see README). Later changes keep this contract backward
 compatible or bump the version.
 
 ## Package and dependencies
 
-Distribution/CLI: `agent-session-control`; import: `agent_session_control`; initial version 0.1.0. Python >=3.10,<3.15 initially, matching the published optional ACP SDK. Core is standard-library only; optional `history` uses SessKit >=0.2.21, optional `acp` uses official `agent-client-protocol>=0.12.1,<0.13`. Dev dependencies include pytest, pytest-asyncio, Ruff, Pyrefly, build and schema validation as needed.
+Distribution/CLI: `agent-session-control`; import: `agent_session_control`; initial version 0.1.0. Python >=3.10,<3.15 initially, matching the published optional ACP SDK. Core is standard-library only; optional `history` uses SessKit >=0.3.2, optional `acp` uses official `agent-client-protocol>=0.12.1,<0.13`. Dev dependencies include pytest, pytest-asyncio, Ruff, Pyrefly, build and schema validation as needed.
 
 Top-level imports must not load ACP, SessKit, a UI framework, native histories, storage or terminals. Public API lives in explicit modules; lazy top-level conveniences are allowed. Library metadata cannot contain local checkout paths. uv may pin SessKit to its existing immutable published wheel; final host integration uses a versioned library artifact, not an editable/path dependency.
 
@@ -22,7 +22,7 @@ Top-level imports must not load ACP, SessKit, a UI framework, native histories, 
 - `build_create_plan(runtime, cwd, *, model=None, native_id=None, auto_approve=False, mcp_servers=()) -> LaunchPlan`.
 - `build_resume_plan(runtime, session, *, auto_approve=False, mcp_servers=()) -> LaunchPlan`, where session is a normalized mapping with exact `id`/`path`/`cwd` fields. Do not rescan to guess the session. Preserve native resume identity and fail rather than create a blank replacement.
 - `runtime_profile(runtime)` provides executable aliases, availability, interrupt keys, composer/readiness helpers and explicit capability limitations. Backend-specific behavior does not leak into host callers.
-- A host may supply a runtime profile/registry, so support is not hard-coded to one downstream allowlist. Initial built-ins adapt `claude`, `codex`, `opencode`, `cursor`, `pi`. No dormant runtime maintenance is authorized.
+- A host may supply a runtime profile/registry, so support is not hard-coded to one downstream allowlist. Built-in profiles adapt `claude`, `codex`, `opencode`, `cursor`, `pi`, `antigravity`. No dormant runtime maintenance is authorized.
 - Preserve caller defaults. Source-host approval behavior is supplied explicitly with `auto_approve=True`; the generic library does not globally relax approvals. Model override is per launch and observed model stays separate.
 - MCP configuration must be per-session/process and private; never persist credentials in plans returned for display, logs, snapshots, model context or global config. This includes every intermediate launcher: moving a secret from `LaunchPlan.env` into tmux `-e NAME=value` argv is prohibited. CLI users need an explicit non-argv input channel for secret-bearing MCP configuration. Existing inline syntax remains available for non-secret input. Environment transport is not hostile-user isolation. Unsupported configuration fails before launching.
 

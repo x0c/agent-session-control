@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import NoReturn
 
 BLOCKED = 3
-RUNTIMES = ("claude", "codex", "opencode", "cursor", "pi")
+RUNTIMES = ("claude", "codex", "opencode", "cursor", "pi", "antigravity")
 
 
 def fail_blocked(message: str) -> NoReturn:

@@ -20,7 +20,7 @@ wheels = [
 
 [[package]]
 name = "agent-session-control"
-version = "0.1.1"
+version = "0.1.2"
 source = { editable = "." }
 
 [package.optional-dependencies]
@@ -45,7 +45,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "agent-client-protocol", marker = "extra == 'acp'", specifier = ">=0.12.1,<0.13" },
-    { name = "sesskit", marker = "extra == 'history'", url = "https://github.com/x0c/sesskit/releases/download/v0.2.21/sesskit-0.2.21-py3-none-any.whl" },
+    { name = "sesskit", marker = "extra == 'history'", url = "https://github.com/x0c/sesskit/releases/download/v0.3.2/sesskit-0.3.2-py3-none-any.whl" },
 ]
 provides-extras = ["history", "acp"]
 
@@ -672,10 +672,10 @@ wheels = [
 
 [[package]]
 name = "sesskit"
-version = "0.2.21"
-source = { url = "https://github.com/x0c/sesskit/releases/download/v0.2.21/sesskit-0.2.21-py3-none-any.whl" }
+version = "0.3.2"
+source = { url = "https://github.com/x0c/sesskit/releases/download/v0.3.2/sesskit-0.3.2-py3-none-any.whl" }
 wheels = [
-    { url = "https://github.com/x0c/sesskit/releases/download/v0.2.21/sesskit-0.2.21-py3-none-any.whl", hash = "sha256:9e54d47f9da61d1165cb64ab50acedc78834e918af54988e6e2776cda232bf60" },
+    { url = "https://github.com/x0c/sesskit/releases/download/v0.3.2/sesskit-0.3.2-py3-none-any.whl", hash = "sha256:28cdb625234679a59dcc97588b851a26a0a4f9be65156e4f5e761e69d6d8da28" },
 ]
 
 [[package]]

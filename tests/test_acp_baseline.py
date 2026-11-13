@@ -1121,7 +1121,7 @@ def test_pkg_version_falls_back_to_canonical_without_distribution(
 
     Deterministic: ``importlib.metadata.version`` is forced to raise
     ``PackageNotFoundError`` so ``_pkg_version`` must take the fallback
-    branch, which is bound to ``__version__`` (currently ``0.1.1``) rather
+    branch, which is bound to ``__version__`` (currently ``0.1.2``) rather
     than the stale ``0.1.0`` literal. Installed-metadata resolution is
     untouched: only the fallback value changed.
     """
@@ -1130,18 +1130,18 @@ def test_pkg_version_falls_back_to_canonical_without_distribution(
     from agent_session_control import __version__ as canonical
     from agent_session_control.acp import AGENT_VERSION_FALLBACK, _pkg_version
 
-    assert AGENT_VERSION_FALLBACK == canonical == "0.1.1"
+    assert AGENT_VERSION_FALLBACK == canonical == "0.1.2"
 
     def _missing(_dist: str) -> str:
         raise importlib.metadata.PackageNotFoundError("no dist for test")
 
     monkeypatch.setattr(importlib.metadata, "version", _missing)
-    assert _pkg_version() == "0.1.1"
+    assert _pkg_version() == "0.1.2"
     assert _pkg_version() == canonical == AGENT_VERSION_FALLBACK
 
 
 def test_initialize_agent_info_version_without_distribution(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Official-SDK ``initialize`` reports ``agentInfo`` version ``0.1.1``.
+    """Official-SDK ``initialize`` reports ``agentInfo`` version ``0.1.2``.
 
     Same missing-distribution condition as above, through the real SDK
     response models: ``agent_info.version`` and the ``agentInfo`` wire form
@@ -1160,9 +1160,9 @@ def test_initialize_agent_info_version_without_distribution(monkeypatch: pytest.
         agent = ControlAgent(FakeController(), "fake-test")
         resp = await agent.initialize(1)
         assert resp.protocol_version == 1
-        assert resp.agent_info.version == "0.1.1"
+        assert resp.agent_info.version == "0.1.2"
         wire = dump(resp)
-        assert wire["agentInfo"]["version"] == "0.1.1"
+        assert wire["agentInfo"]["version"] == "0.1.2"
         assert wire["agentInfo"]["name"] == "agent-session-control"
         validate("InitializeResponse", wire)
 

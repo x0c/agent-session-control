@@ -250,7 +250,7 @@ def _sesskit():
         import sesskit  # pyrefly: ignore[missing-import]
     except ImportError as exc:
         raise HistoryError(
-            "history_unavailable", "SessKit is not installed; native observation needs sesskit>=0.2.21."
+            "history_unavailable", "SessKit is not installed; native observation needs sesskit>=0.3.2."
         ) from exc
     return sesskit
 

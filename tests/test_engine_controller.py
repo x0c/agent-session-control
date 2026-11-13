@@ -652,6 +652,105 @@ def test_real_tmux_echo_round_trip(tmp_path):
     asyncio.run(go())
 
 
+def test_antigravity_end_to_end_plan_run_observe_and_load_history(tmp_path):
+    """Built-in antigravity profile + SessKit 0.3.2 observer run end to end."""
+    import json
+    from pathlib import Path
+
+    from agent_session_control.history import HistoryObserver
+    from agent_session_control.runtime import build_create_plan, build_resume_plan, default_registry
+    from agent_session_control.store import RunStore
+
+    async def go():
+        root = str(tmp_path / "control")
+        transcript = Path(tmp_path) / "transcript_full.jsonl"
+        backend = fakes.ScriptBackend()
+
+        def on_submit(pane: str, text: str) -> None:
+            del pane
+            rows = [
+                {
+                    "step_index": 0,
+                    "source": "USER_EXPLICIT",
+                    "type": "USER_INPUT",
+                    "status": "DONE",
+                    "created_at": "2026-11-14T00:00:00Z",
+                    "content": f"<USER_REQUEST>\n{text}\n</USER_REQUEST>",
+                },
+                {
+                    "step_index": 1,
+                    "source": "MODEL",
+                    "type": "PLANNER_RESPONSE",
+                    "status": "DONE",
+                    "created_at": "2026-11-14T00:00:01Z",
+                    "thinking": "evaluating prompt",
+                    "content": "antigravity turn finished",
+                },
+            ]
+            with transcript.open("a", encoding="utf-8") as fh:
+                for row in rows:
+                    fh.write(json.dumps(row) + "\n")
+
+        backend.submit_hook = on_submit
+        registry = default_registry()
+        controller = LocalController(
+            root=root,
+            namespace="session-control",
+            terminal=backend,
+            observer=HistoryObserver(runtime="antigravity"),
+            store=RunStore(root, namespace="session-control"),
+            spawn=False,
+        )
+        caps = controller.capabilities("antigravity")
+        assert caps["mcp"] == "unsupported"
+        assert caps["interrupt_keys"] == ["Escape"]
+
+        handle = await controller.create("antigravity", str(tmp_path), model="gemini-4-hydrogen-xhigh")
+        pane = controller.sessions.get(handle.id)["pane"]
+        assert backend.panes[pane]["argv"] == [
+            "agy",
+            "--model",
+            "gemini-4-hydrogen-xhigh",
+        ]
+        controller.sessions.put(
+            {
+                **controller.sessions.get(handle.id),
+                "native_id": "ag-conv-1",
+                "history_path": str(transcript),
+                "identity_evidence": "claimed",
+                "title": "Antigravity E2E",
+            },
+            actor="test",
+            action="session.bound",
+        )
+        run_id = await controller.start_turn(
+            handle.id,
+            [{"type": "text", "text": "hello antigravity"}],
+            request_id="ag-e2e-1",
+        )
+        result = await controller.wait(run_id, timeout=20.0)
+        assert result.state == "completed", (result.state, result.error)
+        assert result.evidence in ("native", "inferred")
+        history = await controller.load_history(handle.id)
+        kinds = [event.kind for event in history]
+        assert "user_message" in kinds
+        assert "thinking" in kinds
+        assert "assistant_message" in kinds
+        assert any(event.data.get("text") == "antigravity turn finished" for event in history)
+
+        create_plan = build_create_plan("antigravity", str(tmp_path), auto_approve=True, registry=registry)
+        assert list(create_plan.argv) == ["agy", "--dangerously-skip-permissions"]
+        resume_plan = build_resume_plan(
+            "antigravity",
+            {"id": "ag-conv-1", "cwd": str(tmp_path)},
+            auto_approve=True,
+            registry=registry,
+        )
+        assert list(resume_plan.argv) == ["agy", "--dangerously-skip-permissions", "--conversation", "ag-conv-1"]
+
+    asyncio.run(go())
+
+
 def test_detached_supervisor_survives_initiating_exit(tmp_path):
     """Accepted work settles after the creating controller object is dropped."""
     import fakes as _fakes  # pyrefly: ignore[missing-import]

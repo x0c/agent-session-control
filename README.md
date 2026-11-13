@@ -2,24 +2,24 @@
 
 **Languages:** English | [简体中文](README.zh-CN.md)
 
-Launch and track local **Claude Code**, **Codex CLI**, **OpenCode**, **Cursor**, and **Pi** coding-agent sessions from Python: pure launch plans, audited runs, and per-session stdio MCP wiring. Also ships an [agent-client-protocol](https://github.com/agentclientprotocol/agent-client-protocol) (ACP) adapter.
+Launch and track local **Claude Code**, **Codex CLI**, **OpenCode**, **Cursor**, **Pi**, and **Antigravity** coding-agent sessions from Python: pure launch plans, audited runs, and per-session stdio MCP wiring. Also ships an [agent-client-protocol](https://github.com/agentclientprotocol/agent-client-protocol) (ACP) adapter.
 
 This is a **Python library + JSON CLI + ACP adapter** — not a TUI, not a session manager, not a history parser (history observation is delegated to [SessKit](https://github.com/x0c/sesskit)).
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/x0c/agent-session-control/actions/workflows/ci.yml/badge.svg)](https://github.com/x0c/agent-session-control/actions/workflows/ci.yml)
 
-Status: 0.1.1 (see [docs/INTEGRATION.md](docs/INTEGRATION.md) and [docs/CONTRACT.md](docs/CONTRACT.md)). Per-runtime limits are listed below.
+Status: 0.1.2 (see [docs/INTEGRATION.md](docs/INTEGRATION.md) and [docs/CONTRACT.md](docs/CONTRACT.md)). Per-runtime limits are listed below.
 
 ## Install
 
-Install the fixed version from [PyPI](https://pypi.org/project/agent-session-control/0.1.1/) in your project's virtual environment.
+Install the fixed version from [PyPI](https://pypi.org/project/agent-session-control/0.1.2/) in your project's virtual environment.
 
 Requires **Python 3.10–3.14 (3.12 recommended)**. Default tmux backend runs on **macOS and Linux**; Windows/WSL are not supported. A Homebrew `python3` may be 3.15, which the optional `agent-client-protocol` SDK excludes — use a 3.10–3.14 interpreter for the `acp` extra.
 
 ```bash
-VERSION=0.1.1
-SESSKIT=https://github.com/x0c/sesskit/releases/download/v0.2.21/sesskit-0.2.21-py3-none-any.whl
+VERSION=0.1.2
+SESSKIT=https://github.com/x0c/sesskit/releases/download/v0.3.2/sesskit-0.3.2-py3-none-any.whl
 
 # Core only: plans, store, correlation, JSON CLI (stdlib only).
 python -m pip install "agent-session-control==${VERSION}"
@@ -37,25 +37,25 @@ python -c "import agent_session_control; print(agent_session_control.__version__
 
 Need a virtual environment first? Run `python3 -m venv .venv && . .venv/bin/activate`.
 
-The same [wheel and source archive](https://github.com/x0c/agent-session-control/releases/tag/v0.1.1) are also available on GitHub with SHA256 checksums.
+The same [wheel and source archive](https://github.com/x0c/agent-session-control/releases/tag/v0.1.2) are also available on GitHub with SHA256 checksums.
 
 ## What works today (tested)
 
 - **Pure launch plans** (`agent_session_control.runtime`): `build_create_plan`
-  and `build_resume_plan` for the five built-in runtimes (`claude`, `codex`,
-  `opencode`, `cursor`, `pi`) plus explicit third-party `RuntimeProfile`
-  registration. Plans are immutable argv arrays — building one never launches
-  a process, mutates storage, edits global config, or sends a model request.
-  Caller defaults are preserved (no model flag, no approval relaxation unless
-  requested). Unsupported options fail before launch instead of silently
-  degrading.
+  and `build_resume_plan` for the six built-in runtimes (`claude`, `codex`,
+  `opencode`, `cursor`, `pi`, `antigravity`) plus explicit third-party
+  `RuntimeProfile` registration. Plans are immutable argv arrays — building
+  one never launches a process, mutates storage, edits global config, or
+  sends a model request. Caller defaults are preserved (no model flag, no
+  approval relaxation unless requested). Unsupported options fail before
+  launch instead of silently degrading.
 - **Per-session stdio MCP** (`mcp_servers=`): verified launch-only channels
   for `claude` / `codex` / `opencode`, each proven end-to-end with a
   disposable stdio fixture against the real installed CLI (no global config
   touched). Secrets never travel on argv; live values travel only in
-  `plan.env`, redacted from every display projection. `cursor` and `pi`
-  read MCP servers only from persistent config files, so per-launch
-  servers are refused as `unsupported` (no silent downgrade).
+  `plan.env`, redacted from every display projection. `cursor`, `pi`, and
+  `antigravity` read MCP servers only from persistent config files, so
+  per-launch servers are refused as `unsupported` (no silent downgrade).
 - **Durable audited runs** (`agent_session_control.store`): `RunStore` with
   same-transaction actor audit, immutable idempotency keys, cross-process
   admission through `UNIQUE` constraints, per-namespace database files,
@@ -77,7 +77,7 @@ The same [wheel and source archive](https://github.com/x0c/agent-session-control
 
 Core imports need only the standard library. Optional extras:
 
-- `history`: SessKit `>=0.2.21` for native-history observation.
+- `history`: SessKit `>=0.3.2` for native-history observation.
 - `acp`: official `agent-client-protocol >=0.12.1,<0.13` for the ACP adapter.
 
 ## Quick use
@@ -150,7 +150,7 @@ JSON CLI (machine envelope on stdout; ACP owns its own stdout):
 
 ```sh
 python -m agent_session_control version --json
-# {"ok": true, "data": {"package": "agent-session-control", "version": "0.1.1", ...}, "error": null, "meta": {...}}
+# {"ok": true, "data": {"package": "agent-session-control", "version": "0.1.2", ...}, "error": null, "meta": {...}}
 
 python -m agent_session_control plan create --runtime codex --cwd /tmp/demo-proj --json
 # {"ok": true, "data": {"dry_run": true, "status": "planned",
@@ -176,14 +176,14 @@ run these paths end to end.
 
 ## Capability matrix
 
-| Capability | claude | codex | opencode | cursor | pi |
-|---|---|---|---|---|---|
-| Pure plans | yes | yes | yes | yes | yes |
-| Owned hosting + liveness + close (no prompt) | yes | yes | yes | yes | yes |
-| Native turn (login/quota-gated, spends quota) | gated | gated | gated | gated | gated |
-| Per-session MCP launch channel | headless-verified | headless-verified | headless-verified | refused | refused |
-| Hosted TUI MCP delivery | pending host run | pending host run | launcher-owned only | refused (`unsupported`) | refused (`unsupported`) |
-| ACP serving over this runtime | yes | yes | yes | SDK/CLI only | SDK/CLI only |
+| Capability | claude | codex | opencode | cursor | pi | antigravity |
+|---|---|---|---|---|---|---|
+| Pure plans | yes | yes | yes | yes | yes | yes |
+| Owned hosting + liveness + close (no prompt) | yes | yes | yes | yes | yes | yes |
+| Native turn (login/quota-gated, spends quota) | gated | gated | gated | gated | gated | gated |
+| Per-session MCP launch channel | headless-verified | headless-verified | headless-verified | refused | refused | refused |
+| Hosted TUI MCP delivery | pending host run | pending host run | launcher-owned only | refused (`unsupported`) | refused (`unsupported`) | refused (`unsupported`) |
+| ACP serving over this runtime | yes | yes | yes | SDK/CLI only | SDK/CLI only | SDK/CLI only (`agy acp` native) |
 
 Headless proof: disposable stdio fixtures against the real installed CLIs
 (`claude -p`, `codex exec`, `opencode --standalone run`) with no global
@@ -194,12 +194,12 @@ executable presence only — never login, quota, or model entitlement.
 Unavailable login/quota surface as explicit limits, not passes.
 
 Companion Skill: agents driving this library should install
-[`agent-session-control`](https://github.com/x0c/agent-session-control/blob/v0.1.1/skills/agent-session-control/SKILL.md)
-([`references/mcp.md`](https://github.com/x0c/agent-session-control/blob/v0.1.1/skills/agent-session-control/references/mcp.md)),
+[`agent-session-control`](https://github.com/x0c/agent-session-control/blob/v0.1.2/skills/agent-session-control/SKILL.md)
+([`references/mcp.md`](https://github.com/x0c/agent-session-control/blob/v0.1.2/skills/agent-session-control/references/mcp.md)),
 shipped in the wheel at `agent_session_control/skills/agent-session-control`:
 
 ```sh
-npx skills add x0c/agent-session-control@v0.1.1 --skill agent-session-control
+npx skills add x0c/agent-session-control@v0.1.2 --skill agent-session-control
 ```
 
 The Skill teaches the existing JSON CLI lifecycle (plan/host/observe/release);
@@ -209,13 +209,13 @@ it adds no new lifecycle.
 
 | Tool | Role | Relation |
 |---|---|---|
-| [SessKit](https://github.com/x0c/sesskit) | Native-history observation (`history` extra, fixed wheel `v0.2.21`) | Consumed as an explicit pinned install; never vendored |
+| [SessKit](https://github.com/x0c/sesskit) | Native-history observation (`history` extra, fixed wheel `v0.3.2`) | Consumed as an explicit pinned install; never vendored |
 | [agent-client-protocol](https://github.com/agentclientprotocol/agent-client-protocol) | ACP wire protocol + Python SDK (`acp` extra, `>=0.12.1,<0.13`) | Consumed from PyPI; adapter serves one runtime per invocation |
 | `tmux` | Default terminal backend (macOS/Linux) | External dependency; installed per-OS in CI |
 
 ## Limitations
 
-- Cursor and Pi read MCP servers only from persistent config files, so per-session `mcp_servers=` is refused as `unsupported` (no silent downgrade).
+- Cursor, Pi, and Antigravity read MCP servers only from persistent config files, so per-session `mcp_servers=` is refused as `unsupported` (no silent downgrade). Note `agy acp` is provided natively by the `agy` CLI.
 - OpenCode per-session MCP takes effect only when the launcher owns the server; an ambient background service ignores it.
 - `completed` means the correlated turn ended, never that a task passed acceptance. Missing usage stays `null`.
 - Live control spends model quota and needs the runtime executable plus login. Disposable project/state roots isolate control state only: hosting may still record native history under the runtime's standard locations, and `close_session` never deletes it.

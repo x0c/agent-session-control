@@ -84,8 +84,16 @@ Per-runtime baseline matrix (production `LocalController.capabilities`):
 | Runtime | `mcp` | Served over ACP |
 |---|---|---|
 | `claude`, `codex`, `opencode` | `supported` | yes |
-| `cursor`, `pi` | `unsupported` | no (refused at the gate, exit 2) |
+| `cursor`, `pi`, `antigravity` | `unsupported` | no (refused at the gate, exit 2) |
 | unknown runtime | probe raises `unsupported` | no (refused at the gate, exit 2) |
+
+Antigravity note: the installed `agy` CLI (`1.5.8`) also ships a native
+`agy acp` subcommand, which operates directly without going through
+`agent-session-control`. By contrast, `agent-session-control acp --runtime antigravity`
+honestly refuses before serving (exit 2) because `agy --settings` rejects
+`mcpServers` and `agy` only reads MCP servers from persistent
+`mcp_config.json` files, leaving the stdio MCP launch-injection baseline
+unmet.
 
 Optional `http`/`sse` MCP stays unadvertised for every runtime (no opt-in).
 Native CLI login for a baseline runtime may still be a prerequisite for live
@@ -227,7 +235,7 @@ prerequisite for live turns):
 
 ```sh
 python -m agent_session_control acp --runtime opencode --root <disposable-root> --namespace recipe
-# --runtime claude | codex | opencode only; cursor/pi exit 2 before serving.
+# --runtime claude | codex | opencode only; cursor/pi/antigravity exit 2 before serving.
 ```
 
 The Python below is executed verbatim by

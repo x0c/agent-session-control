@@ -285,6 +285,11 @@ class SupervisorRunner:
             "identity_evidence": session.get("identity_evidence"),
         }
         while True:
+            if _expired(spec, record):
+                self.fail(
+                    "rejected", "queue_expired", "the target stayed busy past the queue timeout; nothing was sent"
+                )
+                return
             if self.hooks.target_waiting(session):
                 self.fail(
                     "rejected", "target_waiting_input", "the session waits on an earlier question; answer it first"
@@ -296,11 +301,6 @@ class SupervisorRunner:
                 self.fail("rejected", "target_busy", "the session is executing another turn")
                 return
             if spec.get("on_busy") == "steer":
-                return
-            if _expired(spec, record):
-                self.fail(
-                    "rejected", "queue_expired", "the target stayed busy past the queue timeout; nothing was sent"
-                )
                 return
             self.update(execution="queued", queue_reason="target_busy")
             self.heartbeat()
@@ -967,6 +967,23 @@ def _wait_for_target(store: Any, run_id: str, target: str, hooks: SupervisorHook
                         "error": {
                             "code": "queue_expired",
                             "message": "an earlier run kept the session past the queue timeout",
+                        },
+                    },
+                )
+            except Exception:
+                pass
+            return 0
+        if current.get("spec", {}).get("on_busy") == "reject":
+            try:
+                store.update(
+                    run_id,
+                    {
+                        "delivery": "rejected",
+                        "execution": "failed",
+                        "queue_reason": "earlier_run_on_session",
+                        "error": {
+                            "code": "target_busy",
+                            "message": "an earlier run already owns the session",
                         },
                     },
                 )

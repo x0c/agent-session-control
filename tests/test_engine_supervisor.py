@@ -407,3 +407,67 @@ def test_target_lock_serializes_two_runs(tmp_path):
     second_thread.join(timeout=60)
     assert store.get(first)["execution"] == "completed"
     assert store.get(second)["execution"] == "completed"
+
+
+def test_expired_run_rejects_even_when_target_is_idle(tmp_path):
+    store = fakes.MemoryStore(str(tmp_path))
+    spec = {
+        "mode": "submit",
+        "runtime": "echo",
+        "cwd": "/tmp",
+        "session_ref": "ses_test",
+        "history_path": "fake-history",
+        "prompt": "stale after wait",
+        "model": None,
+        "on_busy": "queue",
+        "queue_timeout": 1,
+    }
+    data, _ = store.create(
+        "tester",
+        "expired-idle",
+        spec,
+        {"delivery": "accepted", "execution": "queued", "session_ref": "ses_test", "runtime": "echo"},
+    )
+    run_id = data["run_id"]
+    time.sleep(1.2)
+    hooks, backend, _ = fakes.script_hooks(str(tmp_path), observations=["unrecorded"])
+    hooks.target_busy = lambda _session: False
+    rc = run_supervisor(store, run_id, hooks, settle_quiet=0, history_wait=10)
+    assert rc == 0
+    record = store.get(run_id)
+    assert record["delivery"] == "rejected"
+    assert record["execution"] == "failed"
+    assert record["error"]["code"] == "queue_expired"
+    assert backend.submitted == []
+
+
+def test_on_busy_reject_fails_fast_behind_target_lock(tmp_path):
+    store = fakes.MemoryStore(str(tmp_path))
+    spec = {
+        "mode": "submit",
+        "runtime": "echo",
+        "cwd": "/tmp",
+        "session_ref": "ses_locked",
+        "history_path": "fake-history",
+        "prompt": "reject immediately",
+        "model": None,
+        "on_busy": "reject",
+        "queue_timeout": 120,
+    }
+    data, _ = store.create(
+        "tester",
+        "reject-locked",
+        spec,
+        {"delivery": "accepted", "execution": "accepted", "session_ref": "ses_locked", "runtime": "echo"},
+    )
+    run_id = data["run_id"]
+    hooks, backend, _ = fakes.script_hooks(str(tmp_path), observations=["unrecorded"])
+    with file_lock(str(tmp_path), "target:ses_locked") as owned:
+        assert owned
+        rc = run_supervisor(store, run_id, hooks, settle_quiet=0, history_wait=10)
+    assert rc == 0
+    record = store.get(run_id)
+    assert record["delivery"] == "rejected"
+    assert record["execution"] == "failed"
+    assert record["error"]["code"] == "target_busy"
+    assert backend.submitted == []

@@ -118,7 +118,7 @@ def test_pkg_version_falls_back_to_canonical_without_optional_deps(monkeypatch: 
 
     Simulates an unpackaged tree (``PackageNotFoundError`` from
     ``importlib.metadata``): ``_pkg_version()`` must return the canonical
-    ``agent_session_control.__version__`` (currently 0.1.2, never a
+    ``agent_session_control.__version__`` (currently 0.1.3, never a
     divergent literal) without importing optional dependencies. Runs
     in-process and offline: no subprocess, no model, no network.
     """
@@ -126,7 +126,7 @@ def test_pkg_version_falls_back_to_canonical_without_optional_deps(monkeypatch: 
 
     from agent_session_control import __version__ as canonical
 
-    assert canonical == "0.1.2"
+    assert canonical == "0.1.3"
 
     def _missing(_name: str) -> str:
         raise importlib.metadata.PackageNotFoundError("not installed")

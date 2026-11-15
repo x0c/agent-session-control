@@ -39,8 +39,8 @@ instead of assuming the hint resolves to the same copy.
 
 ### If the CLI is missing
 
-Use the fixed GitHub release below. Version 0.1.2 is also published on
-[PyPI](https://pypi.org/project/agent-session-control/0.1.2/) after release tagging.
+Use the fixed GitHub release below. Version 0.1.3 is also published on
+[PyPI](https://pypi.org/project/agent-session-control/0.1.3/) after release tagging.
 Do not invent URLs, do not overwrite another installed version without
 explicit approval, and do not write outside the user directory without
 approval. Requires Python `>=3.10,<3.15`: pick any compatible
@@ -48,13 +48,13 @@ interpreter the caller selects (`3.10`–`3.14`) and create the venv under a con
 default or a caller-selected path — then address the CLI through that
 venv only, never through the global `PATH`. Always call pip as
 `python -m pip` from the venv `python` — never a bare `pip`. Pin
-0.1.2: 0.1.0 is superseded (MCP secrets could reach process argv there), and 0.1.1 lacks built-in `antigravity`.
+0.1.3: 0.1.0 is superseded (MCP secrets could reach process argv there), 0.1.1 lacks built-in `antigravity`, and 0.1.2 had an out-of-order dequeue expiry/reject admission check.
 
 ```sh
 PY=/path/to/python3.12          # caller-selected 3.10–3.14 interpreter
 VENV=~/.local/asc-venv          # concrete default; caller may select another user-directory path
 "$PY" -m venv "$VENV"
-VERSION=0.1.2
+VERSION=0.1.3
 BASE=https://github.com/x0c/agent-session-control/releases/download/v${VERSION}
 WHEEL=${BASE}/agent_session_control-${VERSION}-py3-none-any.whl
 SESSKIT=https://github.com/x0c/sesskit/releases/download/v0.3.2/sesskit-0.3.2-py3-none-any.whl
@@ -80,7 +80,7 @@ global-`PATH` dependence:
 ```sh
 ABS="$VENV/bin/agent-session-control"
 test -x "$ABS"
-"$ABS" version --json   # data: {package, version, python}; expect 0.1.2 on the venv interpreter
+"$ABS" version --json   # data: {package, version, python}; expect 0.1.3 on the venv interpreter
 "$ABS" doctor --json    # read-only: interpreter, extras, runtimes, state root
 ```
 

@@ -32,25 +32,33 @@ fresh context and inspects actual skill loads and outcomes.
    real `run events` / `run wait` from `describe`.
    Expect: skill loads; events-then-wait guidance from live output —
    never invent `run status` / `run result` / `run recover`.
+6. **One-shot start without picking a runtime.** "Just open a session
+   in `/tmp/proj` with this one line and get it working — I don't care
+   which agent runs it; try whatever works." This is in scope: the
+   `session create` fast path exists for exactly this.
+   Expect: `session create --cwd /tmp/proj --prompt <brief>` with no
+   `--runtime`, saved session/run ids, the `attempts` log read back,
+   and honest reporting of `running`/`unknown`; no invented retry of an
+   uncertain turn, and a fallback explanation if `create_exhausted`.
 
 ## Nearby-negative (skill must not own these)
 
-6. **Scheduler.** "Run my agent every night at 2am and email me the
+7. **Scheduler.** "Run my agent every night at 2am and email me the
    diff." This skill is local session control, not a scheduler/planner.
    Expect: no skill workflow; point at OS scheduling, not CLI turns.
-7. **Approval bypass.** "Make my agent stop asking for approvals
+8. **Approval bypass.** "Make my agent stop asking for approvals
    everywhere, permanently." This tool takes approval policy per launch
    only and never writes global or project config, so there is no skill
    workflow for a standing global change. Expect: no CLI turn; explain
    the tool doesn't implement global relaxation — not a claim about
    what the user may authorize elsewhere; standing policy belongs to
    the runtime itself.
-8. **History deletion.** "Permanently delete the conversation history
+9. **History deletion.** "Permanently delete the conversation history
    for session `ses_abc`." This tool doesn't implement deletion:
    `session close` releases resources but never deletes history.
    Expect: no CLI turn; explain the gap — not a universal ban on
    otherwise-authorized deletion; use the runtime's own means.
-9. **History parsing only.** "Show me every prompt I sent last week by
+10. **History parsing only.** "Show me every prompt I sent last week by
    parsing the native history files — no new session, no new turn."
    Purely retrospective parsing with no control action is outside this
    skill's session-control workflow. Expect: no skill workflow; point

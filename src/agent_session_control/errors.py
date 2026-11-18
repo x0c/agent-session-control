@@ -30,6 +30,7 @@ CODE_LOST_OWNERSHIP = "lost_ownership"
 CODE_UPSTREAM_FAILURE = "upstream_failure"
 CODE_STORE_TOO_NEW = "store_too_new"
 CODE_MODEL_UNSUPPORTED = "model_selection_unsupported"
+CODE_CREATE_EXHAUSTED = "create_exhausted"
 
 
 class ControlError(Exception):
@@ -103,3 +104,7 @@ def lost_ownership(message: str, **kwargs: Any) -> ControlError:
 
 def upstream_failure(message: str, **kwargs: Any) -> ControlError:
     return ControlError(CODE_UPSTREAM_FAILURE, message, EXIT_ERROR, **kwargs)
+
+
+def create_exhausted(message: str, **kwargs: Any) -> ControlError:
+    return ControlError(CODE_CREATE_EXHAUSTED, message, EXIT_ERROR, **kwargs)

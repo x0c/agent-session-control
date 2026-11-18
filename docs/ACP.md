@@ -52,7 +52,9 @@ skip-invalid-items behavior in the SDK's generated `schema.py` field metadata.
 invocation. Each optional feature needs an explicit opt-in — `True` or an
 agreed `{"supported": true}` — plus an implemented controller method. A
 failed probe, a missing key or an explicit opt-out advertises nothing. MCP
-`http`/`sse` stay unadvertised without an explicit opt-in. Link block forms
+`http`/`sse` are never advertised: the adapter refuses non-stdio transports
+unconditionally (see below), so even a custom backend declaring
+`mcp_http`/`mcp_sse` gets no transport advertisement. Link block forms
 follow the backend's `prompt_blocks`, defaulting to the canonical form.
 
 `session/prompt` requires a session created, loaded or resumed on the same
@@ -95,7 +97,10 @@ honestly refuses before serving (exit 2) because `agy --settings` rejects
 `mcp_config.json` files, leaving the stdio MCP launch-injection baseline
 unmet.
 
-Optional `http`/`sse` MCP stays unadvertised for every runtime (no opt-in).
+Optional `http`/`sse` MCP is never advertised for any runtime or custom
+backend: the adapter (`check_mcp_list`) refuses non-stdio transports
+unconditionally in every configuration, so it never claims a transport it
+will not deliver — backend `mcp_http`/`mcp_sse` values are ignored.
 Native CLI login for a baseline runtime may still be a prerequisite for live
 turns; the gate checks the stdio MCP baseline only, never login/quota state.
 
@@ -103,7 +108,7 @@ turns; the gate checks the stdio MCP baseline only, never login/quota state.
 
 | Method | Support | Notes |
 |---|---|---|
-| `initialize` | yes | Returns wire major 1 with truthful per-runtime caps; `image`/`audio`/`embeddedContext` always false, `mcp http/sse` false. |
+| `initialize` | yes | Returns wire major 1 with truthful per-runtime caps; `image`/`audio`/`embeddedContext` always false, `mcp http/sse` always false (non-stdio MCP refused regardless of backend caps). |
 | `session/new` | yes | `cwd` must be absolute; non-empty `additionalDirectories` refused (`-32602`); non-stdio MCP refused (`-32602`); stdio entries translated to the neutral shape and validated at the foundation boundary. |
 | `session/load` | optional (`loadSession`) | Replays full stored history as `session/update` (user/agent/thought/tool chunks), then responds. Unmappable content fails the load instead of silent loss. |
 | `session/resume` | optional (`sessionCapabilities.resume`) | Reconnects with **no** replay. Unknown ids fail `-32002`. |
@@ -157,7 +162,8 @@ turns; the gate checks the stdio MCP baseline only, never login/quota state.
 - **Errors:** unknown sessions `-32002` (with `sessionId`), unsupported values
   `-32602`, authentication `-32000`, unexpected failures `-32603`.
 - **MCP baseline:** stdio entries are structurally accepted; `http`/`sse` are
-  refused because no capability is advertised. Per-session MCP is currently
+  refused because the adapter never advertises or accepts non-stdio
+  transports. Per-session MCP is currently
   supported by the claude, codex and opencode profiles and refused by the
   others before anything launches; runtimes without the baseline cannot be
   served at all (see the serve entry gate above). Refusals name only the

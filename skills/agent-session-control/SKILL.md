@@ -28,14 +28,28 @@ Or `python -m agent_session_control` with the project interpreter.
 when this skill and `--help` disagree, `--help` and `describe` win.
 
 Judge success by exit code or the `ok` field, never by non-empty
-stdout. Every non-streaming command prints exactly one
-`{ok, data, error, meta}` envelope on stdout; logs go to stderr.
-`run events --follow` is the only streaming command and speaks JSONL.
+stdout. Output contract: on a non-TTY stdout (the normal agent case)
+or with `--json`, every non-streaming command prints exactly one
+`{ok, data, error, meta}` envelope on stdout and logs go to stderr;
+a human at a TTY without `--json` gets human-readable text for
+success instead, while runtime failures still print the envelope.
+Argparse usage errors (unknown flag, missing required argument) keep
+the argparse usage text on stderr with exit 2 and also print a
+`usage_error` envelope on stdout whose `next_commands` points at the
+`describe` entry for the exact flags — judge those by exit code or
+the `ok` field. `run events --follow` is the only streaming command
+and speaks JSONL.
 
 `next_commands` in error envelopes is rendered from the serving
 interpreter (`python -m agent_session_control ...`). When several
 installs exist, re-issue follow-ups through your pinned `$ABS` path
 instead of assuming the hint resolves to the same copy.
+
+High-frequency failures carry their recovery path inside the envelope
+itself: `not_found` on a session id appends a concrete `session list`
+in the same `--root`/`--namespace`, and `wait_timeout` appends
+`run events` for the same run. `plan resume` never gets that hint:
+its `--session-id` is a native runtime id, not a control session id.
 
 ### If the CLI is missing
 
@@ -100,15 +114,27 @@ login, quota, or model entitlement. A missing login surfaces as an
 explicit backend limit, not a pass.
 
 - Omit `--model` to inherit the runtime default. A supplied model
-  applies to that launch only and is never written anywhere.
-  `opencode` has no verified per-launch model flag: `--model` there is
-  refused (`model_selection_unsupported`), never silently remapped.
-- Default approvals add no relaxation. Pass approval relaxation only
-  when the user's explicit policy allows it for this launch; never
-  auto-grant it and never write it to global or project config.
+  applies to that launch only and is never written anywhere. Every
+  built-in runtime accepts `--model`; for `opencode` (1.19.5) the flag
+  is accepted by the hosted root command and the selected model shows
+  in its TUI model selector, while an actual model turn was not
+  live-verified (it spends quota).
+- Approvals: the CLI offers no approval-relaxation parameter, so every
+  CLI launch keeps the runtime's native approval defaults. Relaxation
+  exists only in the SDK/host policy layer (`auto_approve=True` there),
+  never as a CLI flag; never auto-grant it and never write it to global
+  or project config.
 - Preview before hosting: `plan create` and `session create --dry-run`
   are pure and create no state. `--cwd` must be an absolute existing
   project directory, never `/`, the home root, Desktop, or Documents.
+- Fast path (humans, one-shots): `session create` also accepts a
+  missing `--runtime` (best-effort selection: registry order,
+  availability-gated, per-runtime backoff retries, cross-runtime
+  fallback, full `attempts` log, `create_exhausted` when everything
+  fails) plus an optional `--prompt` for the first turn. Uncertain
+  outcomes (`unknown`) are reported, never auto-retried. For scoped
+  agent work keep the explicit runtime lifecycle below; use the fast
+  path only when a human asks for a one-shot start.
 
 ## 3. One scoped session lifecycle
 
@@ -234,7 +260,8 @@ Failure: `ok: false`, `data: null`, exit non-zero, with
 `error: {code, message, hint, next_commands, details}`.
 The ACP entry is the exception: it must keep stdout protocol-clean,
 so serving refusals go to stderr as `acp: <message>` plus
-`acp: hint: <hint>` with exit 2 and empty stdout.
+`acp: hint: <hint>` with exit 2 and empty stdout; its argparse usage
+errors likewise stay stderr-only with no envelope on stdout.
 
 | `error.code` | Exit | Meaning and recovery |
 |---|---|---|

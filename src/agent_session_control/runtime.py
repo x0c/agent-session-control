@@ -11,14 +11,15 @@ storage or global configuration, and never sends a model request. Unsupported
 MCP configuration and unsupported options fail here, before any launch.
 
 Per-session stdio MCP servers travel launch-only: OpenCode through the
-private process env ``OPENCODE_CONFIG_CONTENT`` with the launcher-owned
-``--standalone`` private server (verified, opencode v2.2.5: ``--standalone
-debug config`` shows the virtual document while the ambient service ignores
-it; headless proof via ``--standalone run``), Claude through
-``--mcp-config <json>`` argv plus ``--strict-mcp-config`` (verified, claude
-2.1.314), Codex through repeated ``-c mcp_servers.<name>.*`` argv overrides
-(verified, codex 0.166.0). Cursor and Pi only read MCP servers from
-persistent config files, so they honestly refuse per-launch servers.
+private process env ``OPENCODE_CONFIG_CONTENT`` (verified offline on
+opencode 1.19.5: ``debug config`` resolves the virtual document and
+``mcp list`` attempts its servers with no extra flag; the pre-1.19
+``--standalone`` private-server flag no longer exists and is never passed,
+and live model-backed delivery has not been re-verified on 1.19.5), Claude
+through ``--mcp-config <json>`` argv plus ``--strict-mcp-config`` (verified,
+claude 2.1.314), Codex through repeated ``-c mcp_servers.<name>.*`` argv
+overrides (verified, codex 0.166.0). Cursor and Pi only read MCP servers
+from persistent config files, so they honestly refuse per-launch servers.
 
 Secret safety: server ``env`` values NEVER travel on argv. Claude argv
 carries ``${NAME}`` references (officially expanded from the process
@@ -208,7 +209,12 @@ def _codex_mcp_parts(servers: tuple[dict, ...]) -> tuple[list[str], dict[str, st
 
 
 def _opencode_mcp_document(servers: tuple[dict, ...]) -> str:
-    """opencode.json shape (verified against ``mcp add`` on v2.2.2)."""
+    """opencode.json shape (``mcp.servers.<name>`` entries).
+
+    Verified against ``mcp add`` on the pre-1.19 CLI and re-verified offline
+    on opencode 1.19.5: ``OPENCODE_CONFIG_CONTENT`` with this shape resolves
+    in ``debug config`` and its servers are attempted by ``mcp list``.
+    """
     import json as _json
 
     document: dict = {"mcp": {"servers": {}}}
@@ -358,6 +364,12 @@ def _builtin_profiles() -> list[RuntimeProfile]:
             auto_approve_args=("--dangerously-skip-permissions",),
             composer_parser="between_rules",
             limitations=(
+                "First launch in an untrusted directory shows Claude's "
+                "workspace-trust dialog (default 'No, exit'); the library "
+                "refuses to inject through it, so a fresh directory needs a "
+                "one-time trust confirmation (host hook or human) before the "
+                "first submission. Claude itself remembers the choice; the "
+                "headless -p mode skips the dialog.",
                 "Auto-approval is omitted when running as uid 0 outside a sandbox; "
                 "the runtime itself rejects the flag there.",
                 "MCP travels on argv as a --mcp-config document plus --strict-mcp-config; "
@@ -391,7 +403,7 @@ def _builtin_profiles() -> list[RuntimeProfile]:
             display_name="OpenCode",
             executable="opencode",
             interrupt_keys=("Escape", "Escape"),
-            model_flag=None,
+            model_flag="--model",
             supports_mcp=True,
             mcp_channel=MCP_CHANNEL_ENV,
             mcp_target="OPENCODE_CONFIG_CONTENT",
@@ -399,13 +411,19 @@ def _builtin_profiles() -> list[RuntimeProfile]:
             auto_approve_args=("--auto",),
             composer_parser="opencode_bars",
             limitations=(
-                "No verified per-launch model flag on the hosted root command; "
-                "--model requests fail instead of falling back to another model.",
-                "MCP travels in the private process env (OPENCODE_CONFIG_CONTENT) and "
-                "takes effect only with the launcher-owned --standalone private server "
-                "(verified via --standalone debug config and --standalone run on v2.2.5); "
-                "an ambient background service ignores it, so hosted launches with MCP "
-                "include --standalone and never write persistent config.",
+                "Per-launch model selection passes the opencode 1.19.5 "
+                "root-command -m/--model (provider/model format). The "
+                "hosted root command accepts the flag and the selected "
+                "model shows in the TUI model selector; an actual model "
+                "turn (which spends quota) was not run, so turn-level "
+                "effect stays unverified. Model requests are never "
+                "silently remapped to another model.",
+                "MCP travels in the private process env (OPENCODE_CONFIG_CONTENT). "
+                "Offline on opencode 1.19.5: debug config resolves the document "
+                "and mcp list attempts its servers with no extra flag; the "
+                "pre-1.19 --standalone private-server flag no longer exists and "
+                "is never passed. Live model-backed delivery has not been "
+                "re-verified on 1.19.5, and no persistent config is ever written.",
             ),
         ),
         RuntimeProfile(
@@ -583,26 +601,10 @@ def _require_absolute_cwd(cwd: str | None, *, what: str = "--cwd") -> str | None
 
 
 def _fresh_argv(profile: RuntimeProfile, *, auto_approve: bool, extra_args: tuple[str, ...]) -> list[str]:
+    # Codex 0.137.0 removed `--no-daemon`; interactive `codex [OPTIONS]
+    # [PROMPT]` needs no daemon flag, so every built-in shares this shape.
     approve = _approve_args(profile, auto_approve)
-    if profile.id == "codex":
-        return [profile.executable, "--no-daemon", *approve, *extra_args]
     return [profile.executable, *approve, *extra_args]
-
-
-def _ensure_opencode_standalone(argv: list[str], *, has_mcp: bool) -> list[str]:
-    """Insert the launcher-owned ``--standalone`` flag for requested MCP.
-
-    Verified against installed opencode v2.2.5: ``OPENCODE_CONFIG_CONTENT``
-    is honored only by a private server (``--standalone debug config`` shows
-    the virtual document; ambient ``debug config`` omits it and ambient
-    ``mcp list`` reports only persistent servers). Hosted launches with MCP
-    therefore use the proven ``--standalone`` path; without MCP the argv is
-    unchanged to preserve exact resume identity and no-MCP behavior. No
-    persistent config is written and ambient inheritance is never relied on.
-    """
-    if has_mcp and "--standalone" not in argv:
-        argv.insert(1, "--standalone")
-    return argv
 
 
 def _exact_id(session: Mapping[str, Any], field: str, *, what: str, hint: str | None = None) -> str:
@@ -628,7 +630,7 @@ def _resume_argv(
         native_id = _exact_id(
             session, "id", what="Resume needs the exact native session id; refusing to start a blank replacement."
         )
-        return [profile.executable, "resume", "--no-daemon", *approve, *extra_args, native_id]
+        return [profile.executable, "resume", *approve, *extra_args, native_id]
     if profile.id == "opencode":
         native_id = _exact_id(
             session, "id", what="Resume needs the exact native session id; refusing to start a blank replacement."
@@ -710,8 +712,6 @@ def build_create_plan(
         argv.extend([*mcp_argv, "--strict-mcp-config"])
     else:
         argv.extend(mcp_argv)
-    if profile.id == "opencode":
-        argv = _ensure_opencode_standalone(argv, has_mcp=bool(mcp_env))
     return LaunchPlan(argv=tuple(argv), cwd=_require_absolute_cwd(cwd), env=mcp_env)
 
 
@@ -741,8 +741,6 @@ def build_resume_plan(
         argv.extend([*mcp_argv, "--strict-mcp-config"])
     else:
         argv.extend(mcp_argv)
-    if profile.id == "opencode":
-        argv = _ensure_opencode_standalone(argv, has_mcp=bool(mcp_env))
     return LaunchPlan(argv=tuple(argv), cwd=_require_absolute_cwd(session.get("cwd")), env=mcp_env)
 
 

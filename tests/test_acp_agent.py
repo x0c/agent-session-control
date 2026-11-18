@@ -99,6 +99,18 @@ class ExplodingCapsController(FakeController):
         raise RuntimeError("probe failed")
 
 
+class HttpCapsController(FakeController):
+    """Backend declaring optional MCP transports this adapter cannot serve.
+
+    Even with `mcp_http`/`mcp_sse` set to True, the adapter must not
+    advertise transports it refuses unconditionally in `check_mcp_list`.
+    """
+
+    def capabilities(self, runtime: str) -> dict:
+        caps = super().capabilities(runtime)
+        return {**caps, "mcp_http": True, "mcp_sse": True}
+
+
 class UnsupportedResumeController(FakeController):
     """Explicit backend opt-out suppresses the feature even with the method."""
 
@@ -234,6 +246,35 @@ def test_initialize_capabilities_truthful() -> None:
         assert caps.session_capabilities.close is not None
         assert caps.session_capabilities.list is not None
         validate("InitializeResponse", dump(resp))
+
+    asyncio.run(go())
+
+
+def test_http_sse_caps_never_advertised_and_still_refused() -> None:
+    """Declaration/refusal consistency: a custom backend declaring
+    ``mcp_http``/``mcp_sse`` still gets no transport advertisement — the
+    adapter refuses non-stdio MCP unconditionally, so it must not claim a
+    capability it will not deliver."""
+    from acp import RequestError
+
+    async def go() -> None:
+        agent = ControlAgent(HttpCapsController(), "fake-test")
+        resp = await agent.initialize(1)
+        caps = resp.agent_capabilities
+        assert caps is not None
+        assert caps.mcp_capabilities is not None
+        assert caps.mcp_capabilities.http is False
+        assert caps.mcp_capabilities.sse is False
+        validate("InitializeResponse", dump(resp))
+        await agent.new_session("/tmp/asc-proj")
+        with pytest.raises(RequestError) as exc:
+            await agent.new_session(
+                "/tmp/asc-proj",
+                mcp_servers=[{"name": "remote", "type": "http", "url": "http://127.0.0.1:1/mcp"}],
+            )
+        assert exc.value.code == -32602
+        refusal = (exc.value.data or {}).get("message", "")
+        assert "stdio only" in refusal
 
     asyncio.run(go())
 

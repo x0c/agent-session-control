@@ -808,6 +808,60 @@ def test_detached_supervisor_survives_initiating_exit(tmp_path):
             os.environ["ASC_TEST_FIXTURES"] = old
 
 
+def test_detached_entry_settles_certain_rejection_not_unknown(tmp_path):
+    """The ``python -m`` entry shares class identity with the canonical module.
+
+    The detached entry used to execute the supervisor module as a second
+    ``__main__`` copy; a submit-stage ``CertainFailure`` raised by the
+    canonical hooks (exactly what the production controller does for startup
+    dialogs) then escaped ``dispatch``'s except clause and settled through
+    the crash path as ``unknown``. Delegating to the canonical module keeps
+    one class identity, so the same refusal settles as a certain rejection
+    with the code preserved.
+    """
+    import fakes as _fakes  # pyrefly: ignore[missing-import]
+
+    async def go():
+        file_root = str(tmp_path / "control" / "test")
+        store = _fakes.FileStore(file_root)
+        backend = _fakes.FileBackend(file_root)
+        controller = LocalController(
+            root=file_root,
+            namespace="default",
+            runtime_profiles={"echo": _fakes.EchoProfile()},
+            terminal=backend,
+            observer=_fakes.FileHistory(file_root),
+            store=store,
+            spawn=True,
+            supervisor_factory="fakes:certain_reject_file_hooks_factory",
+            supervisor_store_factory="fakes:file_store_factory",
+        )
+        handle = await controller.create("echo", str(tmp_path))
+        run_id = await controller.start_turn(handle.id, [{"type": "text", "text": "brief"}], request_id="refuse-1")
+        deadline = time.monotonic() + 45.0
+        record = None
+        while time.monotonic() < deadline:
+            record = store.get(run_id)
+            if record.get("execution") in ("completed", "failed", "interrupted", "unknown"):
+                break
+            time.sleep(0.5)
+        assert record is not None, "the detached supervisor must settle the run"
+        assert record["execution"] == "failed", record
+        assert record["delivery"] == "rejected", record
+        assert (record.get("error") or {}).get("code") == "startup_dialog", record
+        assert controller.reap_children() == [], "settled runs must leave no live children behind"
+
+    old = os.environ.get("ASC_TEST_FIXTURES")
+    os.environ["ASC_TEST_FIXTURES"] = os.path.join(_HERE, "fixtures", "engine")
+    try:
+        asyncio.run(go())
+    finally:
+        if old is None:
+            os.environ.pop("ASC_TEST_FIXTURES", None)
+        else:
+            os.environ["ASC_TEST_FIXTURES"] = old
+
+
 def test_admit_preserves_full_binding_and_runtime(tmp_path):
     """R3: a bound session must observe through its own runtime provider."""
     from agent_session_control.controller import HostHooks, build_hooks
@@ -1238,3 +1292,166 @@ def test_start_turn_concurrent_same_key_converges_single_run(tmp_path):
     trail = store.audit_trail(run_id)
     creates = [e for e in trail if e["action"] == "run.create"]
     assert len(creates) == 1, f"exactly one durable acceptance, got {len(creates)}"
+
+
+def _seed_active_run(controller, *, key="race-run-1"):
+    """Create a live (unsettled) run directly in the store."""
+    data, _ = controller.run_store.create(
+        "test",
+        key,
+        {"prompt": "do the thing"},
+        {"delivery": "accepted", "execution": "accepted", "session_ref": "ses_x", "runtime": "echo"},
+    )
+    return data["run_id"]
+
+
+def test_interrupt_retries_version_race_and_converges(tmp_path):
+    """A supervisor write landing between read and enqueue must not fail
+    the interrupt; it retries with a fresh version and converges."""
+
+    class RacingStore:
+        """Simulates the observed race: a background delivery update lands
+        right after the controller's first read, before its first enqueue."""
+
+        def __init__(self, inner, run_id):
+            self._inner = inner
+            self._run_id = run_id
+            self.enqueue_calls = 0
+
+        def get(self, run_id, **kwargs):
+            return self._inner.get(run_id, **kwargs)
+
+        def enqueue(self, run_id, actor, key, body, expected):
+            self.enqueue_calls += 1
+            if self.enqueue_calls == 1:
+                # The supervisor's delivery update invalidates the read.
+                self._inner.update(self._run_id, {"delivery": "dispatching"})
+            return self._inner.enqueue(run_id, actor, key, body, expected)
+
+    async def go():
+        controller = make_controller(tmp_path)
+        store = controller.run_store
+        run_id = _seed_active_run(controller)
+        racing = RacingStore(store, run_id)
+        controller._store = racing
+        await controller.interrupt(run_id)
+        assert racing.enqueue_calls == 2, "exactly one conflict retry, then convergence"
+        queued = [m for m in store.messages(run_id) if m["action"] == "interrupt"]
+        assert len(queued) == 1 and queued[0]["state"] == "queued"
+
+    asyncio.run(go())
+
+
+def test_interrupt_settled_during_race_returns_without_retry(tmp_path):
+    """A run settling inside the race window is a silent no-op, never retried."""
+
+    class SettlingStore:
+        def __init__(self, inner, run_id):
+            self._inner = inner
+            self._run_id = run_id
+            self.enqueue_calls = 0
+
+        def get(self, run_id, **kwargs):
+            return self._inner.get(run_id, **kwargs)
+
+        def enqueue(self, run_id, actor, key, body, expected):
+            self.enqueue_calls += 1
+            if self.enqueue_calls == 1:
+                self._inner.update(
+                    self._run_id,
+                    {"delivery": "dispatched", "execution": "completed", "result": {"final_response": "done"}},
+                )
+            return self._inner.enqueue(run_id, actor, key, body, expected)
+
+    async def go():
+        controller = make_controller(tmp_path)
+        store = controller.run_store
+        run_id = _seed_active_run(controller)
+        settling = SettlingStore(store, run_id)
+        controller._store = settling
+        await controller.interrupt(run_id)
+        assert settling.enqueue_calls == 1, "a settled run must not be enqueued against again"
+        assert store.messages(run_id) == [], "no interrupt message may be recorded for a settled run"
+
+    asyncio.run(go())
+
+
+def test_interrupt_retry_is_bounded(tmp_path):
+    """A persistently racing run exhausts the retry budget and reports conflict."""
+
+    class AlwaysRacingStore:
+        def __init__(self, inner, run_id):
+            self._inner = inner
+            self._run_id = run_id
+            self.enqueue_calls = 0
+
+        def get(self, run_id, **kwargs):
+            return self._inner.get(run_id, **kwargs)
+
+        def enqueue(self, run_id, actor, key, body, expected):
+            self.enqueue_calls += 1
+            flip = "dispatching" if self.enqueue_calls % 2 else "requeued"
+            self._inner.update(self._run_id, {"delivery": flip})
+            return self._inner.enqueue(run_id, actor, key, body, expected)
+
+    async def go():
+        controller = make_controller(tmp_path)
+        store = controller.run_store
+        run_id = _seed_active_run(controller)
+        racing = AlwaysRacingStore(store, run_id)
+        controller._store = racing
+        with pytest.raises(ControlError) as excinfo:
+            await controller.interrupt(run_id)
+        assert excinfo.value.code == "conflict"
+        assert racing.enqueue_calls == 4, "one attempt plus at most three retries"
+        assert store.messages(run_id) == []
+
+    asyncio.run(go())
+
+
+def test_create_reports_launch_failed_when_runtime_dies_immediately(tmp_path):
+    """A runtime that exits instantly (e.g. incompatible argv) must surface
+    as launch_failed over the existing failed-row path, not as hosted."""
+
+    class DeadOnHostBackend(fakes.ScriptBackend):
+        def host(self, argv, **kwargs):
+            pane = super().host(argv, **kwargs)
+            self.panes[pane]["alive"] = False
+            return pane
+
+    async def go():
+        controller = make_controller(tmp_path, terminal=DeadOnHostBackend(), host_liveness_probes=(0.0, 0.01))
+        with pytest.raises(ControlError) as excinfo:
+            await controller.create("echo", str(tmp_path))
+        assert excinfo.value.code == "launch_failed"
+        listed = await controller.list_sessions()
+        assert len(listed["sessions"]) == 1
+        row = controller.sessions.get(listed["sessions"][0]["session_id"])
+        assert row["status"] == "failed"
+
+    asyncio.run(go())
+
+
+def test_create_survives_transient_dead_verdict_in_confirmation_window(tmp_path):
+    """A single dead verdict is not proof: the confirmation window must let
+    a still-starting runtime recover and host normally."""
+
+    class RevivingBackend(fakes.ScriptBackend):
+        def __init__(self):
+            super().__init__()
+            self.liveness_calls = 0
+
+        def liveness(self, pane):
+            self.liveness_calls += 1
+            if self.liveness_calls == 1:
+                return "dead"
+            return super().liveness(pane)
+
+    async def go():
+        controller = make_controller(tmp_path, terminal=RevivingBackend(), host_liveness_probes=(0.0, 0.01))
+        handle = await controller.create("echo", str(tmp_path))
+        row = controller.sessions.get(handle.id)
+        assert row["status"] == "hosted"
+        assert controller.backend.liveness_calls == 2
+
+    asyncio.run(go())

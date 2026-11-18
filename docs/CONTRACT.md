@@ -14,7 +14,7 @@ Top-level imports must not load ACP, SessKit, a UI framework, native histories, 
 
 ### errors
 
-`ControlError(code, message, exit_code=1, *, hint=None, next_commands=None, details=None)` retains the extraction source's observable fields. Stable codes distinguish usage, not-found, conflict, unavailable/unsupported, timeout, uncertain delivery, lost ownership and upstream execution failure. The CLI maps errors to `{ok,data,error,meta}`; ACP uses protocol errors, not the CLI envelope on the wire. Preserve the native error/evidence without exposing credentials.
+`ControlError(code, message, exit_code=1, *, hint=None, next_commands=None, details=None)` retains the extraction source's observable fields. Stable codes distinguish usage, not-found, conflict, unavailable/unsupported, timeout, uncertain delivery, lost ownership, upstream execution failure and best-effort exhaustion (`create_exhausted`). The CLI maps errors to `{ok,data,error,meta}` — argparse usage errors included, except the ACP entry whose stdout stays protocol-clean; ACP uses protocol errors, not the CLI envelope on the wire. Preserve the native error/evidence without exposing credentials.
 
 ### runtime
 
@@ -36,6 +36,10 @@ Extract `marker`, `wire_prompt`, `own_message`, `compact_event`, `correlate` and
 
 ## Shared models (models.py)
 
+### best-effort start (`agent_session_control.besteffort`)
+
+`create_session_best_effort(controller, cwd, *, prompt, model, mcp_servers, runtimes, attempts_per_runtime, backoff_base, backoff_cap, confirm_window, request_id, actor)` is the engine behind the `session create` auto mode (`--runtime` omitted). It consumes only the `SessionController` port plus the runtime availability probe (executable presence, never login/quota; a controller-declared `capabilities["available"]` wins when present). Policy, observable in the returned/raised attempt log: caller-level errors abort; `unavailable`/`unsupported` skip a candidate without retry; other create/submit failures retry the same runtime with capped exponential backoff, then fall back; a first turn that reaches terminal `failed` inside the confirm window is closed and never retried on the same runtime; `completed`/`interrupted`/`unknown` and a still-running turn (window timeout) are reported as started — unknown outcome is never retry permission. Total failure raises `create_exhausted` with the full attempt log in `details`. An explicit `--runtime` on `session create` bypasses this module entirely and keeps the single-attempt contract.
+
 Use typed dataclasses/Protocols; JSON serialization is explicit. Fields below are the public contract; implementations may add optional fields without requiring callers to supply them.
 
 - `SessionHandle`: `id: str` (opaque local control ID), `runtime: str`, `cwd: str`, `native_id: str | None`, `instance_id: str | None`. Native IDs are exact and never replaced by a shortened local control ID.
@@ -49,20 +53,21 @@ The ACP adapter accepts any object satisfying this async port; production CLI us
 ```python
 # Interface declaration in prose; not executable implementation.
 def capabilities(self, runtime: str) -> dict: ...
-async def create(self, runtime: str, cwd: str, *, model: str | None = None,
-                 mcp_servers=(), actor: str = "local-user") -> SessionHandle: ...
-async def resume(self, session_id: str, *, cwd: str | None = None,
-                 mcp_servers=(), actor: str = "local-user") -> SessionHandle: ...
-async def start_turn(self, session_id: str, prompt: list[dict], *,
-                     request_id: str, on_busy: str = "queue",
-                     actor: str = "local-user") -> str: ...  # durable run ID
+async def create(
+    self, runtime: str, cwd: str, *, model: str | None = None, mcp_servers=(), actor: str = "local-user"
+) -> SessionHandle: ...
+async def resume(
+    self, session_id: str, *, cwd: str | None = None, mcp_servers=(), actor: str = "local-user"
+) -> SessionHandle: ...
+async def start_turn(
+    self, session_id: str, prompt: list[dict], *, request_id: str, on_busy: str = "queue", actor: str = "local-user"
+) -> str: ...  # durable run ID
 # watch is an async iterator; calling it does not itself require await.
 def watch(self, run_id: str, *, after: int = 0): ...  # AsyncIterator[ControlEvent]
 async def wait(self, run_id: str, *, timeout: float | None = None) -> RunResult: ...
 async def interrupt(self, run_id: str, *, actor: str = "local-user") -> None: ...
 async def close_session(self, session_id: str, *, actor: str = "local-user") -> None: ...
-async def list_sessions(self, *, cwd: str | None = None,
-                        cursor: str | None = None) -> dict: ...
+async def list_sessions(self, *, cwd: str | None = None, cursor: str | None = None) -> dict: ...
 async def load_history(self, session_id: str) -> list[ControlEvent]: ...
 ```
 

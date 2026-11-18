@@ -9,7 +9,12 @@ availability probes.
 
 from __future__ import annotations
 
-from agent_session_control import correlation, errors, models, runtime, store
+from agent_session_control import besteffort, correlation, errors, models, runtime, store
+from agent_session_control.besteffort import (
+    BestEffortAttempt,
+    BestEffortResult,
+    create_session_best_effort,
+)
 from agent_session_control.correlation import (
     build_result,
     compact_event,
@@ -56,6 +61,8 @@ __version__ = "0.1.3"
 
 __all__ = [
     "__version__",
+    "BestEffortAttempt",
+    "BestEffortResult",
     "ControlError",
     "ControlEvent",
     "LaunchPlan",
@@ -73,10 +80,12 @@ __all__ = [
     "build_create_plan",
     "build_resume_plan",
     "build_result",
+    "besteffort",
     "compact_event",
     "composer_region",
     "correlate",
     "correlation",
+    "create_session_best_effort",
     "default_home",
     "default_registry",
     "describe_runtimes",

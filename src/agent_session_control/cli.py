@@ -40,6 +40,17 @@ def _next(*parts: str) -> list[str]:
     return [" ".join([*_exe_argv(), *parts])]
 
 
+def _scope_flags(args: Any) -> list[str]:
+    """Render the effective ``--root``/``--namespace`` so follow-ups share scope."""
+    flags: list[str] = []
+    if getattr(args, "root", None):
+        flags += ["--root", str(args.root)]
+    namespace = getattr(args, "namespace", None)
+    if namespace and namespace != "default":
+        flags += ["--namespace", str(namespace)]
+    return flags
+
+
 def _pkg_version() -> str:
     try:
         from importlib.metadata import version
@@ -123,20 +134,35 @@ COMMANDS: dict[str, dict] = {
         "examples": ["plan resume --runtime claude --session-id abc --path /h --cwd /tmp/proj"],
     },
     "session create": {
-        "summary": "Create and host a fresh controlled session for one runtime/project.",
+        "summary": (
+            "Create and host a controlled session; omit --runtime for best-effort selection with backoff and fallback."
+        ),
         "risk": "write_local",
         "args": [
             ARG_JSON,
             ARG_ROOT,
             ARG_NAMESPACE,
-            {"flags": ("--runtime",), "required": True},
+            {
+                "flags": ("--runtime",),
+                "default": None,
+                "help": "Runtime id; omit for best-effort selection with backoff and fallback.",
+            },
             ARG_CWD,
             ARG_MODEL,
+            {
+                "flags": ("--prompt",),
+                "default": None,
+                "help": "First-turn brief; submitted once the session is hosted.",
+            },
+            {"flags": ("--prompt-file",), "default": None, "help": "Path to a brief file; '-' reads piped stdin."},
             ARG_DRY_RUN,
             ARG_MCP,
             ARG_MCP_FILE,
         ],
-        "examples": ["session create --runtime pi --cwd /tmp/proj"],
+        "examples": [
+            "session create --runtime pi --cwd /tmp/proj",
+            "session create --cwd /tmp/proj --prompt 'fix the login retry'",
+        ],
     },
     "session resume": {
         "summary": "Resume an exact known session without rescanning or guessing.",
@@ -324,6 +350,31 @@ def emit_error(exc: BaseException) -> int:
     json.dump(envelope, sys.stdout, ensure_ascii=False)
     sys.stdout.write("\n")
     return code
+
+
+_SESSION_NOT_FOUND_CMDS = {"session resume", "session close", "run submit"}
+
+
+def _decorate_error(exc: ControlError, args: Any) -> ControlError:
+    """Attach the concrete recovery path on high-frequency failures.
+
+    Only fills what the raise site left empty and only appends, so
+    controller-provided guidance always wins.
+    """
+    command = getattr(args, "command_name", "")
+    scope = _scope_flags(args)
+    if exc.code == "not_found" and command in _SESSION_NOT_FOUND_CMDS:
+        if not exc.hint:
+            exc.hint = "session list in the same --root/--namespace shows the sessions that exist."
+        exc.next_commands = [*exc.next_commands, *_next("session", "list", *scope, "--json")]
+    elif exc.code == "wait_timeout" and command == "run wait":
+        run_id = getattr(args, "run_id", None)
+        if run_id:
+            exc.next_commands = [
+                *exc.next_commands,
+                *_next("run", "events", "--run-id", run_id, "--after", "0", *scope, "--json"),
+            ]
+    return exc
 
 
 # -- validation -----------------------------------------------------------------
@@ -607,47 +658,199 @@ def cmd_plan_resume(args: Any, _factory: Any = None) -> dict:
 # -- session writes ------------------------------------------------------------------
 
 
+def _replayable_prompt_flags(args: Any) -> list[str]:
+    """Prompt flags for a verbatim replay; empty when piped over stdin."""
+    if getattr(args, "prompt_file", None):
+        if args.prompt_file == "-":
+            return []
+        return ["--prompt-file", args.prompt_file]
+    if getattr(args, "prompt", None):
+        return ["--prompt", args.prompt]
+    return []
+
+
+def _mcp_replay_flags(args: Any) -> list[str]:
+    """MCP flags for a verbatim replay; inline input is never echoed back
+    (it may carry secrets) and yields no suggestion at all."""
+    if getattr(args, "mcp_servers_file", None):
+        if args.mcp_servers_file == "-":
+            return []
+        return ["--mcp-servers-file", args.mcp_servers_file]
+    return []
+
+
+def _create_followup(args: Any, cwd: str) -> list[str]:
+    """Real-run suggestion for a dry run; empty when any input cannot be
+    replayed verbatim (stdin-piped prompt, stdin-piped or inline MCP)."""
+    if getattr(args, "prompt_file", None) == "-":
+        # Stdin-sourced input would silently disappear from the suggestion.
+        return []
+    if getattr(args, "mcp_servers_file", None) == "-" or getattr(args, "mcp_servers", None) is not None:
+        # Inline MCP may carry secrets and must never be echoed back; a
+        # suggestion without it would silently drop the servers.
+        return []
+    parts = ["session", "create"]
+    if getattr(args, "runtime", None):
+        parts += ["--runtime", args.runtime]
+    parts += ["--cwd", cwd]
+    if args.model:
+        parts += ["--model", args.model]
+    parts += _replayable_prompt_flags(args) + _mcp_replay_flags(args) + _scope_flags(args)
+    return parts
+
+
+def _resume_followup(args: Any, session_id: str) -> list[str]:
+    """Real-resume suggestion for a dry run; empty on stdin-piped or inline MCP."""
+    if getattr(args, "mcp_servers_file", None) == "-" or getattr(args, "mcp_servers", None) is not None:
+        return []
+    parts = ["session", "resume", "--session-id", session_id]
+    if getattr(args, "cwd", None):
+        parts += ["--cwd", args.cwd]
+    parts += _mcp_replay_flags(args) + _scope_flags(args)
+    return parts
+
+
+def _submit_followup(args: Any, session_id: str, request_id: str) -> list[str]:
+    """Real-submit suggestion for a dry run; empty on a stdin-piped prompt."""
+    if getattr(args, "prompt_file", None) == "-":
+        return []
+    parts = ["run", "submit", "--session-id", session_id]
+    if getattr(args, "prompt_file", None):
+        parts += ["--prompt-file", args.prompt_file]
+    else:
+        parts += ["--prompt", args.prompt]
+    parts += ["--request-id", request_id]
+    if args.on_busy != "queue":
+        parts += ["--on-busy", args.on_busy]
+    parts += _scope_flags(args)
+    return parts
+
+
 def cmd_session_create(args: Any, factory: Any = None) -> dict:
     cwd = _validate_cwd(args.cwd)
     _guard_create_directory(cwd)
     servers = _resolve_mcp_servers(args)
+    prompt = _read_prompt(args) if (getattr(args, "prompt", None) or getattr(args, "prompt_file", None)) else None
+    runtime = getattr(args, "runtime", None)
     if args.dry_run:
         from agent_session_control import runtime as runtime_mod
 
-        try:
-            plan = runtime_mod.build_create_plan(args.runtime, cwd, model=args.model, mcp_servers=servers)
-        except ControlError:
-            raise
-        except Exception as exc:
-            raise ControlError("usage_error", f"Cannot plan for runtime {args.runtime!r}: {exc}.", 2) from exc
+        if runtime:
+            try:
+                plan = runtime_mod.build_create_plan(runtime, cwd, model=args.model, mcp_servers=servers)
+            except ControlError:
+                raise
+            except Exception as exc:
+                raise ControlError("usage_error", f"Cannot plan for runtime {runtime!r}: {exc}.", 2) from exc
+            data = {
+                "dry_run": True,
+                "status": "planned",
+                "session": {"id": None, "runtime": runtime, "cwd": cwd, "model": args.model},
+                "launch": plan.to_dict(),
+                "target": {"runtime": runtime, "cwd": cwd},
+            }
+            if prompt is not None:
+                data["prompt_chars"] = len(prompt)
+            followup = _create_followup(args, cwd)
+            data["next_commands"] = _next(*followup) if followup else []
+            return data
+        from agent_session_control import besteffort
+
+        registry = runtime_mod.default_registry()
+        followup = _create_followup(args, cwd)
         return {
             "dry_run": True,
             "status": "planned",
-            "session": {"id": None, "runtime": args.runtime, "cwd": cwd, "model": args.model},
-            "launch": plan.to_dict(),
-            "target": {"runtime": args.runtime, "cwd": cwd},
+            "session": {"id": None, "runtime": None, "cwd": cwd, "model": args.model},
+            "candidates": [
+                {"runtime": runtime_id, "available": runtime_mod.is_available(runtime_id)}
+                for runtime_id in registry.ids
+            ],
+            "policy": {
+                "attempts_per_runtime": besteffort.DEFAULT_ATTEMPTS_PER_RUNTIME,
+                "backoff_base": besteffort.DEFAULT_BACKOFF_BASE,
+                "backoff_cap": besteffort.DEFAULT_BACKOFF_CAP,
+                "confirm_window": besteffort.DEFAULT_CONFIRM_WINDOW,
+            },
+            "prompt_chars": len(prompt) if prompt is not None else None,
+            "next_commands": _next(*followup) if followup else [],
+            "note": "Omitting --runtime takes the best-effort path: candidates in registry order, "
+            "per-runtime backoff retries, fallback on failure.",
         }
     controller = (factory or _default_controller)(args)
-    handle = _run_coro(controller.create(args.runtime, cwd, model=args.model, mcp_servers=servers, actor="local-user"))
-    return {
-        "dry_run": False,
-        "status": "created",
-        "session": _session_dict(handle),
-        "next_commands": [
+    if runtime:
+        handle = _run_coro(controller.create(runtime, cwd, model=args.model, mcp_servers=servers, actor="local-user"))
+        data: dict = {
+            "dry_run": False,
+            "status": "created",
+            "session": _session_dict(handle),
+            "next_commands": [
+                *_next("session", "list"),
+                *_next("run", "submit", "--session-id", handle.id, "--prompt", "<brief>"),
+            ],
+        }  # type: ignore[union-attr]
+        if prompt is not None:
+            request_id = uuid.uuid4().hex
+            run_id = _run_coro(
+                controller.start_turn(
+                    handle.id, _blocks(prompt), request_id=request_id, on_busy="queue", actor="local-user"
+                )
+            )
+            data["run"] = {"run_id": run_id, "request_id": request_id, "state": "accepted"}
+            data["next_commands"] = [
+                *_next("run", "events", "--run-id", run_id, "--follow"),
+                *_next("run", "wait", "--run-id", run_id),
+                *_next("session", "close", "--session-id", handle.id),
+            ]
+            data["note"] = (
+                "state=accepted means the first turn was durably queued, not finished; observe it with run wait."
+            )
+        return data
+    from agent_session_control.besteffort import create_session_best_effort
+
+    result = _run_coro(
+        create_session_best_effort(
+            controller, cwd, prompt=prompt, model=args.model, mcp_servers=servers, actor="local-user"
+        )
+    )
+    data = {"dry_run": False, "status": "created", **result.to_dict()}
+    if result.run_id is not None:
+        data["next_commands"] = [
+            *_next("run", "events", "--run-id", result.run_id, "--follow"),
+            *_next("run", "wait", "--run-id", result.run_id),
+            *_next("session", "close", "--session-id", result.session.id),
+        ]
+        data["note"] = (
+            "state=running means the first turn is still working; completed means the turn ended, "
+            "never that the task passed acceptance."
+        )
+    else:
+        data["next_commands"] = [
             *_next("session", "list"),
-            *_next("run", "submit", "--session-id", handle.id, "--prompt", "<brief>"),
-        ],
-    }  # type: ignore[union-attr]
+            *_next("run", "submit", "--session-id", result.session.id, "--prompt", "<brief>"),
+        ]
+    return data
 
 
 def cmd_session_resume(args: Any, factory: Any = None) -> dict:
     session_id = _validate_key(args.session_id, name="--session-id")
     servers = _resolve_mcp_servers(args)
     if args.dry_run:
-        return {"dry_run": True, "status": "planned", "session": {"id": session_id, "cwd": args.cwd}}
+        followup = _resume_followup(args, session_id)
+        return {
+            "dry_run": True,
+            "status": "planned",
+            "session": {"id": session_id, "cwd": args.cwd},
+            "next_commands": _next(*followup) if followup else [],
+        }
     controller = (factory or _default_controller)(args)
     handle = _run_coro(controller.resume(session_id, cwd=args.cwd, mcp_servers=servers, actor="local-user"))
-    return {"dry_run": False, "status": "resumed", "session": _session_dict(handle)}
+    return {
+        "dry_run": False,
+        "status": "resumed",
+        "session": _session_dict(handle),
+        "next_commands": _next("run", "submit", "--session-id", handle.id, "--prompt", "<brief>"),
+    }  # type: ignore[union-attr]
 
 
 def cmd_session_close(args: Any, factory: Any = None) -> dict:
@@ -678,6 +881,7 @@ def cmd_run_submit(args: Any, factory: Any = None) -> dict:
     if args.on_busy not in ("queue", "steer", "reject"):
         raise ControlError("usage_error", "Unknown --on-busy mode.", 2)
     if args.dry_run:
+        followup = _submit_followup(args, session_id, request_id)
         return {
             "dry_run": True,
             "status": "planned",
@@ -689,6 +893,7 @@ def cmd_run_submit(args: Any, factory: Any = None) -> dict:
                 "blocks": _blocks(prompt),
                 "prompt_chars": len(prompt),
             },
+            "next_commands": _next(*followup) if followup else [],
         }
     controller = (factory or _default_controller)(args)
     run_id = _run_coro(
@@ -798,8 +1003,18 @@ def _follow_jsonl(controller: Any, run_id: str, *, after: int, limit: int, timeo
                 return "timeout"
         return "settled"
 
+    async def _run_bounded() -> str:
+        # Hard deadline: the clock is enforced even while the event source
+        # stays silent, instead of only being checked after the next event.
+        if deadline is None:
+            return await _run()
+        try:
+            return await asyncio.wait_for(_run(), timeout=max(0.0, timeout))
+        except asyncio.TimeoutError:
+            return "timeout"
+
     try:
-        reason = _run_coro(_run())
+        reason = _run_coro(_run_bounded())
     except ControlError as exc:
         line({"type": "end", "run_id": run_id, "reason": "error", "error": exc.to_dict()})
         raise
@@ -854,21 +1069,73 @@ HANDLERS = {
 # -- parser --------------------------------------------------------------------------
 
 
+def _epilog(spec: dict) -> str:
+    """Help tail mirroring the risk level with copy-pasteable examples."""
+    lines = [f"risk: {spec['risk']}"]
+    examples = list(spec.get("examples") or [])
+    if examples:
+        lines.append("examples:")
+        lines.extend(f"  {PACKAGE_NAME} {example}" for example in examples)
+    return "\n".join(lines)
+
+
+class _Parser(argparse.ArgumentParser):
+    """Usage errors keep argparse's stderr usage + exit 2 and additionally
+    emit the machine envelope on stdout, so agents recover from one parse.
+
+    The ``acp`` entry (stdout is protocol-owned) opts out via
+    ``_asc_protocol_stdout``.
+    """
+
+    def error(self, message: str) -> None:
+        self.print_usage(sys.stderr)
+        sys.stderr.write(f"{self.prog}: error: {message}\n")
+        if not getattr(self, "_asc_protocol_stdout", False):
+            command = self.prog.removeprefix(f"{PACKAGE_NAME} ").strip()
+            follow = ["--command", f'"{command}"'] if command in COMMANDS else []
+            emit_error(
+                ControlError(
+                    "usage_error",
+                    f"{self.prog}: {message}",
+                    2,
+                    hint="Run the describe command from next_commands for the exact flags and examples.",
+                    next_commands=_next("describe", *follow, "--json"),
+                )
+            )
+        raise SystemExit(2)
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="agent-session-control")
+    parser = _Parser(prog=PACKAGE_NAME)
     sub = parser.add_subparsers(dest="command", required=True)
     groups: dict[str, Any] = {}
 
     def group(name: str) -> Any:
         if name not in groups:
             words = name.split()
+            spec = COMMANDS.get(name)
             if len(words) == 1:
-                groups[name] = sub.add_parser(words[0], help=f"{words[0]} commands")
+                if spec is None:  # container node (plan/session/run)
+                    groups[name] = sub.add_parser(words[0], help=f"{words[0]} commands")
+                else:
+                    groups[name] = sub.add_parser(
+                        words[0],
+                        help=spec["summary"],
+                        description=spec["summary"],
+                        epilog=_epilog(spec),
+                        formatter_class=argparse.RawDescriptionHelpFormatter,
+                    )
             else:
                 parent = group(words[0])
                 if not hasattr(parent, "_sub"):
                     parent._sub = parent.add_subparsers(dest="subcommand", required=True)  # noqa: SLF001
-                groups[name] = parent._sub.add_parser(words[1], help=COMMANDS[name]["summary"])
+                groups[name] = parent._sub.add_parser(  # noqa: SLF001
+                    words[1],
+                    help=COMMANDS[name]["summary"],
+                    description=COMMANDS[name]["summary"],
+                    epilog=_epilog(COMMANDS[name]),
+                    formatter_class=argparse.RawDescriptionHelpFormatter,
+                )
         return groups[name]
 
     for name in COMMAND_ORDER:
@@ -891,7 +1158,15 @@ def build_parser() -> argparse.ArgumentParser:
             if arg.get("choices"):
                 kwargs["choices"] = tuple(arg["choices"])
             node.add_argument(*flags, **kwargs)
-    acp_node = sub.add_parser("acp", help=COMMANDS["acp"]["summary"])
+    acp_node = sub.add_parser(
+        "acp",
+        help=COMMANDS["acp"]["summary"],
+        description=COMMANDS["acp"]["summary"],
+        epilog=_epilog(COMMANDS["acp"]),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    # ACP stdout is protocol-owned: its usage errors stay stderr-only.
+    acp_node._asc_protocol_stdout = True  # noqa: SLF001
     from agent_session_control.acp import main as acp_main  # noqa: PLC0415
 
     acp_node.set_defaults(handler="acp", command_name="acp", acp_main=acp_main)
@@ -927,7 +1202,7 @@ def main(argv: list[str] | None = None, *, controller_factory: Any = None) -> in
     try:
         data = args.handler(args, controller_factory)
     except ControlError as exc:
-        return emit_error(exc)
+        return emit_error(_decorate_error(exc, args))
     except BrokenPipeError:
         return 1
     if data is None:

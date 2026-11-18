@@ -262,8 +262,14 @@ class SupervisorRunner:
         except TargetError as exc:
             self.fail("rejected", exc.code, exc.message)
             return
-        if str(session.get("cwd") or "") != str(spec.get("cwd") or "") or str(session.get("path") or "") != str(
-            spec.get("history_path") or ""
+        # A spec accepted before the session's native history existed carries
+        # no history_path; the session registry legitimately learns the exact
+        # path only after the first observed turn. Only a spec that carried a
+        # path can therefore mismatch, and the binding below still records the
+        # current path so late binding is captured. cwd stays strict.
+        spec_path = str(spec.get("history_path") or "")
+        if str(session.get("cwd") or "") != str(spec.get("cwd") or "") or (
+            spec_path and str(session.get("path") or "") != spec_path
         ):
             self.fail("rejected", "target_changed", "the session's project or history changed after submission")
             return
@@ -954,6 +960,25 @@ def _wait_for_target(store: Any, run_id: str, target: str, hooks: SupervisorHook
             return 1
         if current.get("execution") in SETTLED_EXECUTION:
             return 0
+        if current.get("spec", {}).get("on_busy") == "reject":
+            # The target lock is held by another run, so a reject spec must
+            # never queue. Settle exactly like the in-admission busy branch:
+            # certain rejection, failed work, no input was sent.
+            try:
+                store.update(
+                    run_id,
+                    {
+                        "delivery": "rejected",
+                        "execution": "failed",
+                        "error": {
+                            "code": "target_busy",
+                            "message": "the session is executing another turn",
+                        },
+                    },
+                )
+            except Exception:
+                pass
+            return 0
         if _expired(current.get("spec", {}), current):
             try:
                 # Queue expiry never dispatched: rejected intent, failed work.
@@ -1080,5 +1105,14 @@ def main(argv: list[str] | None = None) -> int:
     return run_supervisor(store, args.run_id, hooks)
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+if __name__ == "__main__":  # pragma: no cover
+    # ``python -m`` executes this file as ``__main__``: a second copy of
+    # every class. The hooks factories (and the controller hooks they build
+    # on) import the canonical module, so a submit-stage ``CertainFailure``
+    # raised by the canonical class would not match this copy's
+    # ``except CertainFailure`` and would escape as a crash, downgrading a
+    # certain rejection to ``unknown``. Delegate to the canonical module so
+    # one class identity serves the whole detached process.
+    from agent_session_control.supervisor import main as _canonical_main
+
+    raise SystemExit(_canonical_main())

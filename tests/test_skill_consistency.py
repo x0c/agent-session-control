@@ -259,6 +259,39 @@ def test_unique_task_scope_and_temp_hygiene() -> None:
     assert "trap 'rm -f \"$CFG\"'" in text
 
 
+def test_output_contract_matches_cli_behavior() -> None:
+    """The envelope claim is qualified exactly as the CLI behaves:
+    envelopes on non-TTY stdout or with ``--json``, human-readable text
+    on a TTY without ``--json``, argparse usage errors keeping stderr
+    usage + exit 2 and adding the ``usage_error`` envelope on stdout
+    (pinned in test_acp_cli.py and test_skill_cli.py)."""
+    text = _read_skill()
+    # The unconditional one-envelope-per-command claim must be gone.
+    assert "Every non-streaming command prints exactly one" not in text
+    assert "non-TTY" in text
+    assert "--json" in text
+    assert "human-readable" in text
+    # Argparse usage errors: stderr usage + exit 2 + usage_error envelope.
+    assert "exit 2" in text
+    assert "`usage_error` envelope" in text
+    assert "no envelope at all" not in text
+    # High-frequency failures carry recovery inside the envelope.
+    assert "recovery path inside the envelope" in text
+
+
+def test_approval_relaxation_not_offered_via_cli() -> None:
+    """The skill must not imply a CLI approval-relaxation parameter: the
+    live CLI surface has none (relaxation is SDK/host policy only)."""
+    text = _read_skill()
+    for command in ("plan create", "session create", "session resume"):
+        for flag in _describe_params(command):
+            assert "approv" not in flag.lower(), f"{command} exposes {flag}"
+    assert "no approval-relaxation parameter" in text
+    assert "SDK/host policy layer" in text
+    for flag in ("--auto-approve", "--dangerously", "--skip-permissions", "--yolo"):
+        assert flag not in text
+
+
 def test_links_and_corpus() -> None:
     text = _read_skill()
     targets = re.findall(r"\[[^\]]+\]\(([^)]+)\)", text)

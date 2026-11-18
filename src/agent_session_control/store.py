@@ -122,7 +122,10 @@ class RunStore:
             os.chmod(self.path, 0o600)
         else:
             if not self.path.is_file():
-                raise not_found("No delegation runs exist yet.")
+                raise not_found(
+                    "No delegation runs exist yet.",
+                    hint="Runs are created by run submit in this --root/--namespace; there is no run listing command.",
+                )
             conn = sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True, timeout=15)
         conn.row_factory = sqlite3.Row
         try:
@@ -156,7 +159,11 @@ class RunStore:
     def _row(conn: sqlite3.Connection, run_id: str) -> sqlite3.Row:
         row = conn.execute("SELECT * FROM runs WHERE id=?", (run_id,)).fetchone()
         if row is None:
-            raise not_found(f"Unknown run: {run_id}")
+            raise not_found(
+                f"Unknown run: {run_id}",
+                hint="Run ids are issued by run submit and recorded in the control state; "
+                "there is no run listing command.",
+            )
         return row
 
     def _append(self, conn: sqlite3.Connection, run_id: str, identity: str, body: dict) -> bool:

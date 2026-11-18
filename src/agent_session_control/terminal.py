@@ -25,6 +25,7 @@ import hashlib
 import os
 import re
 import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -41,6 +42,8 @@ _PASTE_VISIBLE_POLLS = 10
 _SUBMIT_CONFIRM_POLLS = 4
 _SUBMIT_RETRIES = 2
 _INTERRUPT_PRESS_GAP = 0.3
+_CLOSE_TERM_GRACE = 2.0
+_CLOSE_POLL = 0.05
 _DEFAULT_WIDTH = 120
 _DEFAULT_HEIGHT = 40
 
@@ -63,6 +66,50 @@ _COMPOSER_MARKER_CHARS = 24
 _BLOCKING_DIALOG_RE = re.compile(r"\benter\s+(?:to\s+)?confirm\b", re.IGNORECASE)
 _DIALOG_FOOTER_LINES = 6
 
+# Claude Code's first-launch workspace-trust dialog owns the keyboard the
+# same way. Verified against claude 2.1.303 (fresh config, directory never
+# opened before); the bottom of the pane reads exactly::
+#
+#     ❯  No, exit
+#        Yes, I trust this folder
+#     Enter to confirm · Esc to cancel
+#
+# The footer line is already covered by ``_BLOCKING_DIALOG_RE``; the option
+# pair is anchored too so a render without that footer still refuses input.
+# Numbered variants ("1. Yes, proceed" / "2. No, exit") come from claude's
+# settings-driven trust prompt. Both lines must appear together in the
+# footer window: "No, exit" alone is not dialog proof.
+_TRUST_DIALOG_NO_EXIT_RE = re.compile(r"^\s*(?:❯\s*)?(?:\d+\.\s*)?no, exit\s*$", re.IGNORECASE)
+_TRUST_DIALOG_YES_RE = re.compile(r"^\s*(?:❯\s*)?(?:\d+\.\s*)?yes,\s+(?:i trust this folder|proceed)", re.IGNORECASE)
+
+# Claude Code's first-run onboarding owns the keyboard the same way: a
+# submitted brief plus Enter would answer a wizard step (theme picker,
+# login-method selection) instead of reaching the conversation. Verified
+# against claude 2.1.303 (fresh CLAUDE_CONFIG_DIR, tmux capture). The theme
+# step reads e.g.::
+#
+#     To change this later, run /theme
+#         Auto (match terminal)
+#     ❯ ✔ Dark mode
+#         ...
+#     Syntax theme: Monokai Extended (ctrl+t to disable)
+#
+# and the login step reads e.g.::
+#
+#     Select login method:
+#     ❯ 1. Claude account with subscription · Pro, Max, Team, or Enterprise
+#       2. Anthropic Console account · API usage billing
+#
+# Measured on the real screens, the anchors sit up to 14 non-empty lines
+# apart, so onboarding gets its own wider window (the dialog footer window
+# stays at 6). Both anchors must appear together: each line alone is not
+# onboarding proof.
+_ONBOARDING_HINT_RE = re.compile(r"\bto change this later, run /theme\b", re.IGNORECASE)
+_ONBOARDING_THEME_RE = re.compile(r"^\s*syntax theme:.*\(ctrl\+t to disable\)\s*$", re.IGNORECASE)
+_ONBOARDING_LOGIN_RE = re.compile(r"^\s*select login method:\s*$", re.IGNORECASE)
+_ONBOARDING_LOGIN_OPTION_RE = re.compile(r"anthropic console account", re.IGNORECASE)
+_ONBOARDING_WINDOW_LINES = 20
+
 
 def blocked_input_cause(raw: str | None) -> str | None:
     """Retryable refusal reason when a pane's keyboard belongs to a dialog.
@@ -73,7 +120,27 @@ def blocked_input_cause(raw: str | None) -> str | None:
     if not raw:
         return None
     lines = [line for line in plain_text(raw).splitlines() if line.strip()]
-    if any(_BLOCKING_DIALOG_RE.search(line) for line in lines[-_DIALOG_FOOTER_LINES:]):
+    footer = lines[-_DIALOG_FOOTER_LINES:]
+    if any(_TRUST_DIALOG_NO_EXIT_RE.match(line) for line in footer) and any(
+        _TRUST_DIALOG_YES_RE.search(line) for line in footer
+    ):
+        return (
+            "the pane shows Claude's workspace-trust dialog (default option 'No, exit' would quit); "
+            "open the pane once, confirm trust for the directory, then submit again"
+        )
+    onboarding = lines[-_ONBOARDING_WINDOW_LINES:]
+    if any(_ONBOARDING_HINT_RE.search(line) for line in onboarding) and any(
+        _ONBOARDING_THEME_RE.match(line) for line in onboarding
+    ):
+        return (
+            "the pane shows Claude's first-run onboarding (theme picker); open the pane once, "
+            "finish onboarding, then submit again"
+        )
+    if any(_ONBOARDING_LOGIN_RE.match(line) for line in onboarding) and any(
+        _ONBOARDING_LOGIN_OPTION_RE.search(line) for line in onboarding
+    ):
+        return "the pane shows Claude's login-method selection; open the pane once, log in, then submit again"
+    if any(_BLOCKING_DIALOG_RE.search(line) for line in footer):
         return "the pane shows a confirmation dialog; its keyboard does not belong to the agent"
     return None
 
@@ -673,12 +740,15 @@ class TmuxBackend:
     def _cleanup_exact(self, pane: str, witness: tuple[str, str] | None) -> bool:
         """Best-effort kill of exactly the witnessed instance, nothing else.
 
-        Re-queries the live instance and kills only when it still equals the
-        creation witness (same pane_id AND pid). A replacement/foreign
+        Re-queries the live instance and proceeds only when it still equals
+        the creation witness (same pane_id AND pid). A replacement/foreign
         process, an unreadable instance, or a missing witness is left alone.
-        The kill targets the exact ``pane_id`` (``kill-pane``), never the
-        reusable session name, so a name-reuse race cannot take out the wrong
-        session. Returns True only when the named session reads dead after.
+        The kill signals the pinned witnessed pid (SIGTERM, then SIGKILL):
+        a session name is reusable and pane ids restart when the tmux
+        server exits, so a name- or id-targeted ``kill-pane`` racing a
+        replacement after the check could take out the wrong process, while
+        a dead pid cannot be signalled. Returns True only when the named
+        session reads dead after.
         """
         if witness is None:
             return False
@@ -692,13 +762,24 @@ class TmuxBackend:
         if current != witness:
             return False
         try:
-            self._run("kill-pane", "-t", pane_id)
-        except (OSError, subprocess.TimeoutExpired):
+            target_pid = int(pane_pid)
+        except (TypeError, ValueError):
             return False
-        try:
-            return self.liveness(pane) == "dead"
-        except Exception:
+        if target_pid <= 0:
             return False
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.kill(target_pid, sig)
+            except ProcessLookupError:
+                pass  # the verified process is already gone; verify death below
+            except OSError:
+                return False
+            try:
+                if self._await_death(pane, _CLOSE_TERM_GRACE):
+                    return True
+            except Exception:
+                return False
+        return False
 
     def _host_direct(self, pane: str, target_argv: list[str], *, runtime: str, cwd: str | None, ident: str) -> str:
         cmd = self._base_new_session_cmd(pane, cwd=cwd)
@@ -884,12 +965,19 @@ class TmuxBackend:
 
         Refuses panes without a matching ownership record, and refuses live
         panes whose current instance no longer matches the record (a
-        replacement process under a reused name is never killed). The record
-        is removed only after the pane is proven dead, so a crash between the
-        kill and the cleanup leaves recoverable ownership behind. A failed or
-        uncertain kill keeps the record: the pane stays owned and recoverable.
+        replacement process under a reused name is never killed). The kill
+        signals the exact recorded pane process (SIGTERM, then SIGKILL),
+        never the reusable session name or pane id: after the ownership check
+        the verified pane can die, the tmux server can exit (a fresh server
+        restarts pane ids), and a name- or id-targeted tmux kill would then
+        take out whatever reused them, while a dead pid cannot be signalled.
+        The record is removed only after the pane is proven dead, so a crash
+        between the kill and the cleanup leaves recoverable ownership behind.
+        A failed or uncertain kill keeps the record: the pane stays owned and
+        recoverable.
         """
-        if not self.is_owned(pane):
+        record = self.registry.lookup(pane)
+        if record is None or record.get("socket") != self.socket:
             raise TmuxError("not_owned", f"Refusing to kill a pane not owned by this backend (socket {self.socket}).")
         if self.liveness(pane) == "dead":
             self.registry.forget(pane)
@@ -901,15 +989,38 @@ class TmuxBackend:
                 "refusing to kill a possible foreign process",
             )
         try:
-            self._run("kill-session", "-t", pane)
-        except (OSError, subprocess.TimeoutExpired):
+            pane_pid = int(record.get("pane_pid") or 0)
+        except (TypeError, ValueError):
+            pane_pid = 0
+        if pane_pid <= 0:
             return False
-        # Verify death regardless of the kill exit code: forgetting the
-        # record for a still-live pane would orphan it beyond recovery.
-        if self.liveness(pane) != "dead":
-            return False
-        self.registry.forget(pane)
-        return True
+        # Kill the pinned recorded pid (the one live_owned verified), never a
+        # re-read record: a concurrent re-host under the same name rewrites
+        # the record, and only the pinned pid is provably ours. A session name
+        # is reusable and pane ids restart when the server exits; a dead pid
+        # can only be signalled if the OS recycles it, the standard accepted
+        # window of pid-based signalling.
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.kill(pane_pid, sig)
+            except ProcessLookupError:
+                pass  # the verified process is already gone; verify death below
+            except OSError:
+                return False
+            if self._await_death(pane, _CLOSE_TERM_GRACE):
+                self.registry.forget(pane)
+                return True
+        return False
+
+    def _await_death(self, pane: str, grace: float) -> bool:
+        """Poll liveness until the session is proven dead or grace expires."""
+        deadline = time.monotonic() + grace
+        while True:
+            if self.liveness(pane) == "dead":
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(_CLOSE_POLL)
 
     # -- readiness ----------------------------------------------------------
 
@@ -1055,6 +1166,19 @@ class TmuxBackend:
                 return False
         return True
 
+    def _refuse_dialog_input(self, pane: str) -> None:
+        """Refuse the submit when a dialog currently owns the pane's keyboard.
+
+        The pre-submit check in the controller can race the runtime's first
+        paint (a trust dialog rendered milliseconds after hosting); checking
+        again under the pane lock, immediately before any byte leaves, turns
+        "typed into a dialog" into a certain refusal. The capture is
+        read-only and the pane lock is already held by the caller.
+        """
+        cause = blocked_input_cause(self.capture(pane))
+        if cause:
+            raise TmuxError("startup_dialog", cause)
+
     def submit_text(self, pane: str, text: str, *, composer_region=None, submit: bool = True) -> None:
         """Paste ``text`` and press Enter with verification.
 
@@ -1071,6 +1195,7 @@ class TmuxBackend:
             self._submit_locked(pane, text, composer_region=composer_region, submit=submit)
 
     def _submit_locked(self, pane: str, text: str, *, composer_region=None, submit: bool = True) -> None:
+        self._refuse_dialog_input(pane)
         if not text:
             if submit:
                 res = self._send_detailed(pane, "send-keys", "-t", pane, "--", "Enter")
@@ -1086,6 +1211,10 @@ class TmuxBackend:
             raise TmuxError("input_rejected", f"paste was rejected ({pasted.cause or 'tmux_error'})")
         if not submit:
             return
+        # A dialog may have appeared between the paste and the Enter key;
+        # pressing Enter would answer it (e.g. confirm 'No, exit') instead
+        # of submitting. Nothing reached the composer, so this stays certain.
+        self._refuse_dialog_input(pane)
         verifiable = self._await_composer_holds(pane, composer_region, text)
         res = self._send_detailed(pane, "send-keys", "-t", pane, "--", "Enter")
         if res.uncertain or (not res.ok):

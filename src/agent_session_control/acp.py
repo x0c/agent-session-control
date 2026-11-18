@@ -12,9 +12,9 @@ engine, interfaces and wire validation; nothing here re-implements them.
 Capability policy: optional protocol features need an explicit verified
 backend value (``True`` or ``{"supported": True}``) plus an implemented
 controller method. A failed probe, a missing key or an explicit opt-out
-advertises nothing. MCP ``http``/``sse`` stay unadvertised without an
-explicit opt-in. Link block forms follow the backend's ``prompt_blocks``,
-defaulting to the canonical form.
+advertises nothing. MCP ``http``/``sse`` are never advertised: the adapter
+refuses non-stdio transports unconditionally. Link block forms follow the
+backend's ``prompt_blocks``, defaulting to the canonical form.
 """
 
 from __future__ import annotations
@@ -522,9 +522,11 @@ class ControlAgent:
 
         Each lifecycle feature needs an explicit opt-in plus an implemented
         controller method. A failed probe, a missing key or an explicit
-        opt-out advertises nothing. MCP transports need an explicit opt-in.
-        Link block forms follow the backend's ``prompt_blocks``, defaulting
-        to the canonical form.
+        opt-out advertises nothing. MCP ``http``/``sse`` are never
+        advertised: ``check_mcp_list`` refuses non-stdio transports
+        unconditionally, so claiming them from backend caps would promise
+        a capability this adapter never delivers. Link block forms follow
+        the backend's ``prompt_blocks``, defaulting to the canonical form.
         """
         caps, probed = self._probe_caps()
         off = {
@@ -561,8 +563,11 @@ class ControlAgent:
             "resume": enabled("resume", "resume"),
             "close": enabled("close", "close"),
             "list": enabled("list", "list"),
-            "mcp_http": bool(probed and caps.get("mcp_http") is True),
-            "mcp_sse": bool(probed and caps.get("mcp_sse") is True),
+            # Non-stdio MCP transports are refused unconditionally by
+            # check_mcp_list; advertising http/sse from backend caps would
+            # claim a capability this adapter never delivers.
+            "mcp_http": False,
+            "mcp_sse": False,
             "link_blocks": link_blocks,
         }
 

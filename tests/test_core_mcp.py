@@ -376,7 +376,6 @@ def test_opencode_env_config_reaches_fixture(tmp_path, fixture_server, nonce):
     env = dict(os.environ, OPENCODE_CONFIG_CONTENT=content)
     argv = [
         opencode,
-        "--standalone",
         "run",
         "--format",
         "json",

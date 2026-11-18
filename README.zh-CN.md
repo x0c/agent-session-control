@@ -2,7 +2,7 @@
 
 **语言：** [English](README.md) | 简体中文
 
-从 Python 启动并跟踪本机 **Claude Code**、**Codex CLI**、**OpenCode**、**Cursor**、**Pi** 与 **Antigravity** 编码助手会话：纯启动计划、可审计运行、按会话 stdio MCP 接线，并自带 [agent-client-protocol](https://github.com/agentclientprotocol/agent-client-protocol)（ACP）适配器。
+从 Python 启动并跟踪本机 **Claude Code**、**Codex CLI**、**OpenCode**、**Cursor**、**Pi** 与 **Antigravity** 编码助手会话：纯启动计划、带 runtime 兑底的最简会话开启、可审计运行、按会话 stdio MCP 接线，并自带 [agent-client-protocol](https://github.com/agentclientprotocol/agent-client-protocol)（ACP）适配器。
 
 这是 **Python 库 + JSON 命令行 + ACP 适配器**，不是终端界面、不是会话管理器、也不是历史解析器（历史观测委托给 [SessKit](https://github.com/x0c/sesskit)）。
 
@@ -10,6 +10,10 @@
 [![CI](https://github.com/x0c/agent-session-control/actions/workflows/ci.yml/badge.svg)](https://github.com/x0c/agent-session-control/actions/workflows/ci.yml)
 
 状态：0.1.3（见 [docs/INTEGRATION.md](docs/INTEGRATION.md) 与 [docs/CONTRACT.md](docs/CONTRACT.md)）。各运行时限制见下文。
+
+支持的 CLI 版本（2026-11-13 验证）：Claude Code 2.1.303、Codex CLI 0.137.0、
+OpenCode 1.19.5、Cursor agent 2026.09.23-86fc751、Pi 1.5.2。仅支持各运行时的
+最新发布版 CLI，旧版本不在支持范围——不做版本嗅探，也不留旧版兼容分支。
 
 ## 安装
 
@@ -48,6 +52,12 @@ GitHub 也提供相同的 [wheel 与源码归档](https://github.com/x0c/agent-s
   改全局配置或发起模型请求。调用方默认值被保留（不传 model 就没有
   `--model`，不传 `auto_approve` 就不放行审批）。不支持的选项在启动前
   直接失败，永不静默降级。
+- **最简开启（尽力完成）**（`agent_session_control.besteffort`）：`session create`
+  省略 `--runtime` 时按注册表顺序尝试候选——可用性门控、同一 runtime
+  退避重试、跨 runtime 兑底；可选 `--prompt` 走持久化路径提交首轮，并在
+  有界确认窗口内观察（登录/配额类快速失败会关闭会话并兑底下一个）。
+  每一步都进入输出的 attempt 日志；全部失败报稳定错误 `create_exhausted`。
+  不确定的结果只如实上报，绝不自动重试。显式传 `--runtime` 保持原有单次语义不变。
 - **按会话 stdio MCP**（`mcp_servers=`）：`claude` / `codex` / `opencode`
   的已验证仅启动期通道，每条都用一次性 stdio fixture 对真实已安装 CLI
   做过端到端证明（未改全局配置）。密钥永不上 argv；真实值只走
@@ -74,6 +84,15 @@ GitHub 也提供相同的 [wheel 与源码归档](https://github.com/x0c/agent-s
 
 ## 快速使用
 
+一条命令、不选 runtime——带退避重试与跨 runtime 兑底的最简开启：
+
+```sh
+python -m agent_session_control session create --cwd /path/to/project \
+  --prompt "fix the login retry" --json
+# data.attempts 记录每个候选的全部步骤；data.run.state 为
+# completed | running（仍在工作）| interrupted | unknown（归因不确定）。
+```
+
 ```python
 from agent_session_control import build_create_plan, build_resume_plan, runtime_profile
 
@@ -85,7 +104,8 @@ resume = build_resume_plan("claude", {"id": "<exact-native-id>", "cwd": "/path/t
 print(resume.argv)
 
 with_mcp = build_create_plan(
-    "claude", "/path/to/project",
+    "claude",
+    "/path/to/project",
     mcp_servers=[{"name": "docs", "command": "/usr/local/bin/docs-mcp", "env": {"API_KEY": "..."}}],
 )
 print(with_mcp.to_dict())  # 脱敏投影：无密钥值、无密钥 argv
@@ -98,9 +118,12 @@ print(runtime_profile("cursor"))  # 能力、中断键、局限
 from agent_session_control import RunStore
 
 store = RunStore()  # ~/.config/agent-session-control/control/runs.sqlite3
-record, created = store.create("local-user", "request-key-1",
-                               {"target": "claude:<id>", "text": "..."},
-                               {"execution": "queued", "delivery": "accepted"})
+record, created = store.create(
+    "local-user",
+    "request-key-1",
+    {"target": "claude:<id>", "text": "..."},
+    {"execution": "queued", "delivery": "accepted"},
+)
 ```
 
 SDK 生命周期（live，会消耗模型配额，需要运行时登录）：
@@ -110,6 +133,7 @@ import asyncio
 import tempfile
 from pathlib import Path
 from agent_session_control.controller import LocalController
+
 
 async def main() -> None:
     # 选用临时项目 + 隔离控制根：永不使用固定 /tmp 路径。
@@ -121,7 +145,8 @@ async def main() -> None:
         try:
             handle = await controller.create("claude", project)
             run_id = await controller.start_turn(
-                handle.id, [{"type": "text", "text": "Reply with ACK."}], request_id="demo-1")
+                handle.id, [{"type": "text", "text": "Reply with ACK."}], request_id="demo-1"
+            )
             assert run_id.startswith("run_"), run_id  # 精确 run 身份
             result = await controller.wait(run_id, timeout=120.0)
             print(result.state, result.evidence)
@@ -132,6 +157,7 @@ async def main() -> None:
             # 仅公开 API 清理：释放 pane；保留历史。
             if handle is not None:
                 await controller.close_session(handle.id)
+
 
 asyncio.run(main())
 ```
@@ -144,7 +170,7 @@ python -m agent_session_control version --json
 
 python -m agent_session_control plan create --runtime codex --cwd /tmp/demo-proj --json
 # {"ok": true, "data": {"dry_run": true, "status": "planned",
-#   "launch": {"argv": ["codex", "--no-daemon"], "cwd": "/tmp/demo-proj", "env_keys": []}}, ...}
+#   "launch": {"argv": ["codex"], "cwd": "/tmp/demo-proj", "env_keys": []}}, ...}
 
 python -m agent_session_control session create --runtime codex --cwd /tmp/demo-proj \
   --dry-run --json --root /tmp/demo-control
@@ -171,16 +197,17 @@ python -m agent_session_control acp --runtime codex --root /tmp/demo-control --n
 | 纯启动计划 | 有 | 有 | 有 | 有 | 有 | 有 |
 | 自有托管 + 存活 + 关闭（不发提示） | 有 | 有 | 有 | 有 | 有 | 有 |
 | 原生回合（需登录/配额，消耗配额） | 受限 | 受限 | 受限 | 受限 | 受限 | 受限 |
-| 按会话 MCP 启动通道 | headless 已验证 | headless 已验证 | headless 已验证 | 拒绝 | 拒绝 | 拒绝 |
-| 托管 TUI MCP 投递 | 待宿主运行 | 待宿主运行 | 仅启动方自有 | 拒绝（`unsupported`） | 拒绝（`unsupported`） | 拒绝（`unsupported`） |
+| 按会话 MCP 启动通道 | headless 已验证 | headless 已验证 | 1.19.5 配置级已验证，live 待复验 | 拒绝 | 拒绝 | 拒绝 |
+| 托管 TUI MCP 投递 | 待宿主运行 | 待宿主运行 | 待宿主运行 | 拒绝（`unsupported`） | 拒绝（`unsupported`） | 拒绝（`unsupported`） |
 | 基于该运行时的 ACP 服务 | 有 | 有 | 有 | 仅 SDK/CLI | 仅 SDK/CLI | 仅 SDK/CLI（`agy acp` 原生提供） |
 
 Headless 证明：对真实已安装 CLI 的一次性 stdio fixture
-（`claude -p`、`codex exec`、`opencode --standalone run`），未改全局配置。
-托管 TUI 投递共享同一 argv/env 通道，但待宿主运行（最终托管 MCP 结论以
-适配器/后端负责人文档为准，见 `docs/ACP.md`、`docs/BACKENDS.md`）。
-可用性探测只反映可执行文件是否存在，不代表登录、配额或模型权益。
-缺失的登录/配额会作为明确限制返回，不算通过。
+（`claude -p`、`codex exec`、`opencode run`），未改全局配置。OpenCode 的
+环境变量通道在 1.19.5 上另做了离线配置级验证（`debug config`、`mcp list`），
+其 live 模型级投递待复验。托管 TUI 投递共享同一 argv/env 通道，但待宿主运行
+（最终托管 MCP 结论以适配器/后端负责人文档为准，见 `docs/ACP.md`、
+`docs/BACKENDS.md`）。可用性探测只反映可执行文件是否存在，不代表登录、配额或
+模型权益。缺失的登录/配额会作为明确限制返回，不算通过。
 
 配套 Skill：使用本库的 agent 应安装
 [`agent-session-control`](https://github.com/x0c/agent-session-control/blob/v0.1.3/skills/agent-session-control/SKILL.md)
@@ -204,7 +231,8 @@ npx skills add x0c/agent-session-control@v0.1.3 --skill agent-session-control
 ## 局限
 
 - Cursor、Pi 与 Antigravity 只从持久配置文件读 MCP 服务，按会话 `mcp_servers=` 会以 `unsupported` 在启动前直接拒绝，不静默丢弃；`agy acp` 由 `agy` CLI 原生提供。
-- OpenCode 按会话 MCP 仅当启动方拥有 server 时生效，常驻后台服务会忽略它。
+- OpenCode 按会话 MCP 仅当启动方拥有 server 时生效，常驻后台服务会忽略它；通道只走私有进程环境变量，1.19.5 上文档可解析（`debug config`、`mcp list`），无需任何旗标（旧版 `--standalone` 已不存在），但 live 投递尚未在 1.19.5 上复验。
+- Claude Code 与 Codex CLI 在陌生目录首次启动会弹工作区/目录信任对话框（Claude 默认高亮「No, exit」）；库检测到对话框会拒绝注入，新目录首轮提交需一次性信任确认（宿主钩子或人工）。确认后各运行时自行记住；Claude 的 headless `-p` 模式跳过该对话框。完全未初始化的 Claude 配置还会先出首启引导页（主题选择、登录方式选择），同样独占键盘；检测到引导页会确定性拒绝（运行落 `failed`、错误码 `startup_dialog`，附可操作提示），而不是把提示词打进引导向导。
 - `completed` 只表示关联回合结束，不表示任务通过验收；缺失用量保持 `null`。
 - 真实控制会消耗模型配额，需要可执行文件与登录。一次性项目/状态目录只隔离控制状态：托管仍可能在运行时标准位置留下原生历史，`close_session` 永不删除原生历史。
 

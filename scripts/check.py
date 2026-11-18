@@ -253,7 +253,7 @@ def _clean_install(wheel: str, install_args: list[str], label: str) -> None:
             "import agent_session_control as asc, pathlib;"
             "from agent_session_control import runtime, store, correlation;"
             "plan = runtime.build_create_plan('codex', '/repo');"
-            "assert plan.argv[:2] == ('codex', '--no-daemon');"
+            "assert plan.argv[0] == 'codex' and '--no-daemon' not in plan.argv;"
             f"assert asc.__version__ == '{EXPECTED_VERSION}', asc.__version__;"
             f"root = pathlib.Path({tmp!r}).resolve();"
             "loc = pathlib.Path(asc.__file__).resolve();"

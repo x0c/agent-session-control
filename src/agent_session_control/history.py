@@ -301,15 +301,27 @@ class HistoryObserver:
     ) -> tuple[Any, bool]:
         """Poll once; returns ``(observation, reset)``.
 
-        ``reset`` means the native history was replaced (truncated/rotated):
-        attribution built so far is void and the run must become unknown,
-        never silently rebound. The returned observation carries the poll's
+        ``reset`` means the native history was replaced (truncated/rotated)
+        after the reader had already established a generation: attribution
+        built so far is void and the run must become unknown, never silently
+        rebound. A cursor-less reader's first poll always reports ``reset``
+        with generation ``"1"`` across every SessKit runtime: that is the
+        initial materialization of the bound file, not a replacement, so it
+        is consumed and correlated like any other poll (attribution stays
+        marker-proof; a stale baseline can only under-report, never
+        misattribute). The returned observation carries the poll's
         ``generation`` so live store events preserve it.
         """
         sesskit = _sesskit()
         poll = reader.poll()
         generation = str(getattr(poll, "generation", "") or "")
-        if poll.reset and events:
+        if poll.reset and (events or generation not in ("", "1")):
+            # A reset after a generation was established (accumulated events,
+            # or a poll carrying a later generation) voids attribution even
+            # when nothing was accumulated yet: the baseline seq still belongs
+            # to the replaced file, and correlating against it would silently
+            # rebind the run instead of reporting the reset
+            # (stale-baseline misattribution).
             return ActivityObservation(recorded=bool(events), generation=generation), True
         for event in poll.events:
             events[event.seq] = event

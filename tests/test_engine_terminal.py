@@ -7,6 +7,7 @@ pane is created by the backend under test and killed in teardown.
 
 import os
 import shutil
+import signal
 import sys
 import threading
 import time
@@ -81,6 +82,239 @@ def test_blocked_dialog_guard_refuses_keyboard_owned_panes():
     assert blocked_input_cause("") is None
 
 
+def test_claude_workspace_trust_dialog_is_refused():
+    """The real first-launch trust dialog of claude 2.1.303 must be refused.
+
+    Text captured verbatim (tmux capture-pane, fresh CLAUDE_CONFIG_DIR,
+    directory never opened before, 120x40 pane) from the pane bottom::
+
+        \u276f  No, exit
+           Yes, I trust this folder
+        Enter to confirm \u00b7 Esc to cancel
+
+    "No, exit" is the highlighted default: pasting a prompt plus Enter would
+    confirm it and quit claude, so the injection layer must refuse first.
+    """
+    dialog = "\n".join(
+        [
+            " Accessing workspace:",
+            "",
+            " /private/tmp/some/proj",
+            "",
+            " Quick safety check: Is this a project you created or one you trust?",
+            "",
+            " Claude Code'll be able to read, edit, and execute files here.",
+            "",
+            " Security guide",
+            "",
+            " \u276f  No, exit",
+            "    Yes, I trust this folder",
+            "",
+            " Enter to confirm \u00b7 Esc to cancel",
+        ]
+    )
+    cause = blocked_input_cause(dialog)
+    assert cause is not None
+    assert "workspace-trust" in cause
+    # The same dialog with live SGR styling (backend.capture keeps escapes).
+    styled = "\x1b[36m\u276f\x1b[0m  No, exit\n Yes, I trust this folder\n Enter to confirm \u00b7 Esc to cancel"
+    assert blocked_input_cause(styled) is not None
+    # The numbered settings-driven variant ("1. Yes, proceed" / "2. No, exit"),
+    # reported for claude's settings.local.json trust prompt.
+    numbered = "\n".join(
+        [
+            " Do you trust the files in this folder?",
+            " Claude Code may read, write, or execute files contained in this directory.",
+            " \u276f 1. Yes, proceed",
+            "   2. No, exit",
+        ]
+    )
+    assert blocked_input_cause(numbered) is not None
+
+
+def test_dialog_guard_does_not_fire_on_normal_tui():
+    """A normal claude prompt footer must never read as a blocking dialog."""
+    normal = "\n".join(
+        [
+            "❯ Reply with ACK and nothing else.",
+            "✻ Brewed for 3s · done 5:00 PM",
+            "─" * 100,
+            '❯ Try "edit <filepath> to..."',
+            "─" * 100,
+            "  Claude-Opus | high",
+            "  ⏵⏵ auto mode on (shift+tab to cycle)",
+        ]
+    )
+    assert blocked_input_cause(normal) is None
+    # "No, exit" alone (no matching yes-option line in the footer window) is
+    # not dialog proof: the pair is the anchor.
+    orphan = "the agent answered No, exit\n❯ next prompt"
+    assert blocked_input_cause(orphan) is None
+
+
+def test_dialog_guard_keeps_footer_window_semantics():
+    """Dialog text above the bottom-6 non-empty lines stays invisible to the guard."""
+    lines_above = [f"filler line {i}" for i in range(6)]
+    dialog = "\n".join(
+        [
+            "❯  No, exit",
+            "   Yes, I trust this folder",
+            "Enter to confirm · Esc to cancel",
+            *lines_above,
+        ]
+    )
+    assert blocked_input_cause(dialog) is None
+
+
+def test_claude_first_run_onboarding_theme_picker_is_refused():
+    """The real first-run onboarding of claude 2.1.303 must be refused.
+
+    Text captured verbatim (tmux capture-pane, completely fresh
+    CLAUDE_CONFIG_DIR, 120x40 pane): the theme picker owns the keyboard —
+    a pasted brief plus Enter selects a theme instead of reaching the
+    conversation, and the turn then dies unattributed. The welcome banner
+    puts the "run /theme" hint 14 non-empty lines above the syntax-theme
+    footer, which is exactly why the onboarding window is wider than the
+    dialog footer window.
+    """
+    banner = [
+        "Welcome to Claude Code v2.1.303",
+        "." * 58,
+        *["  ░░░░  ███▓▓░   *" for _ in range(13)],
+        ".......█ █   █ █..........................................",
+        " Let's get started.",
+        " Choose the text style that looks best with your terminal",
+    ]
+    picker = [
+        " To change this later, run /theme",
+        "     Auto (match terminal)",
+        " ❯ ✔ Dark mode",
+        "     Light mode",
+        "     Dark mode (colorblind-friendly)",
+        "     Light mode (colorblind-friendly)",
+        "     Dark mode (ANSI colors only)",
+        "     Light mode (ANSI colors only)",
+        " ╌" * 12,
+        "  1  function greet() {",
+        '  2 -  console.log("Hello, World!");',
+        '  2 +  console.log("Hello, Claude!");',
+        "  3  }",
+        " ╌" * 12,
+        "  Syntax theme: Monokai Extended (ctrl+t to disable)",
+    ]
+    onboarding = "\n".join([*banner, *picker])
+    cause = blocked_input_cause(onboarding)
+    assert cause is not None
+    assert "onboarding" in cause
+    styled_footer = (
+        "\x1b[38;5;246m  Syntax\x1b[39m \x1b[38;5;246mtheme:\x1b[39m Monokai Extended "
+        "\x1b[38;5;246m(ctrl+t\x1b[39m \x1b[38;5;246mto\x1b[39m \x1b[38;5;246mdisable)\x1b[39m"
+    )
+    styled = onboarding.replace("  Syntax theme: Monokai Extended (ctrl+t to disable)", styled_footer)
+    assert blocked_input_cause(styled) is not None
+
+
+def test_claude_first_run_login_selection_is_refused():
+    """The onboarding login-method step of claude 2.1.303 must be refused.
+
+    Text captured verbatim (fresh CLAUDE_CONFIG_DIR after the theme step):
+    the highlighted login option would consume a pasted brief plus Enter.
+    """
+    login = "\n".join(
+        [
+            *["  ░░░░  ███▓▓░" for _ in range(10)],
+            ".......█ █   █ █..........................................",
+            " Claude Code can be used with your Claude subscription or billed based on API usage "
+            "through your Console account.",
+            " Select login method:",
+            " ❯ 1. Claude account with subscription · Pro, Max, Team, or Enterprise",
+            "   2. Anthropic Console account · API usage billing",
+            "   3. 3rd-party platform · Amazon Bedrock, Microsoft Foundry, Google Vertex AI",
+        ]
+    )
+    cause = blocked_input_cause(login)
+    assert cause is not None
+    assert "login" in cause
+
+
+def test_onboarding_guard_needs_both_anchors():
+    """Neither onboarding anchor alone is refusal proof."""
+    footer_only = "❯ a normal prompt\n  Syntax theme: Monokai Extended (ctrl+t to disable)"
+    assert blocked_input_cause(footer_only) is None
+    hint_only = "\n".join(
+        [
+            " To change this later, run /theme",
+            *[f"filler {i}" for i in range(18)],
+            "❯ a normal prompt",
+        ]
+    )
+    assert blocked_input_cause(hint_only) is None
+    # A conversation that merely mentions console accounts never refuses:
+    # the "Select login method:" anchor line is required too.
+    chatter = "\n".join(
+        [
+            "user: how do I use an Anthropic Console account?",
+            "assistant: open the console and create an API key.",
+            "❯ next prompt",
+        ]
+    )
+    assert blocked_input_cause(chatter) is None
+
+
+def test_submit_text_refuses_claude_trust_dialog_before_any_byte(tmp_path):
+    """A submit into a visible trust dialog must fail certainly, not inject.
+
+    The controller's pre-submit check races the runtime's first paint; the
+    backend re-checks under the pane lock right before the paste.
+    """
+    backend = make_backend(tmp_path, namespace="dialog-refuse-a")
+    pane = "asc-dialog-claude-00000001"
+    backend.capture = lambda target: (
+        " \u276f  No, exit\n   Yes, I trust this folder\n Enter to confirm \u00b7 Esc to cancel"
+    )
+    pasted = []
+
+    def fail_paste(target, text):
+        pasted.append(text)
+        raise AssertionError("paste must never run while a dialog owns the pane")
+
+    backend._paste_locked = fail_paste
+    with pytest.raises(TmuxError) as excinfo:
+        backend.submit_text(pane, "Reply with ACK and nothing else.")
+    assert excinfo.value.code == "startup_dialog"
+    assert "workspace-trust" in excinfo.value.message
+    assert not pasted
+
+
+def test_submit_text_refuses_enter_when_dialog_appears_after_paste(tmp_path):
+    """A dialog appearing between paste and Enter must not receive the Enter."""
+    from agent_session_control.terminal import InjectionResult
+
+    backend = make_backend(tmp_path, namespace="dialog-refuse-b")
+    pane = "asc-dialog-claude-00000002"
+    captures = {"count": 0}
+
+    def fake_capture(target):
+        captures["count"] += 1
+        if captures["count"] < 2:
+            return "\u2500" * 100 + '\n❯ Try "edit <filepath> to..."\n' + "\u2500" * 100
+        return " \u276f  No, exit\n   Yes, I trust this folder\n Enter to confirm \u00b7 Esc to cancel"
+
+    backend.capture = fake_capture
+    backend._paste_locked = lambda target, text: InjectionResult(True)
+    enter_sent = []
+
+    def fake_send(target, *args):
+        enter_sent.append(args)
+        return InjectionResult(True)
+
+    backend._send_detailed = fake_send
+    with pytest.raises(TmuxError) as excinfo:
+        backend.submit_text(pane, "hello")
+    assert excinfo.value.code == "startup_dialog"
+    assert not enter_sent
+
+
 def test_backend_constructor_has_no_side_effects(tmp_path):
     backend = make_backend(tmp_path, namespace="no-side-effects-xyz")
     # No server socket may exist for this namespace before any call.
@@ -144,6 +378,74 @@ def test_live_foreign_pane_is_never_adopted_or_killed(tmp_path):
         assert first.liveness(pane) == "alive", "the refused close disturbed nothing"
     finally:
         first.close(pane)
+
+
+@needs_tmux
+def test_close_signals_the_exact_recorded_process_not_the_name(tmp_path):
+    """close terminates the recorded pane process, never a name/id-targeted tmux kill."""
+    backend = make_backend(tmp_path)
+    pane = host_echo(backend, tmp_path)
+    record = backend.registry.lookup(pane)
+    assert record and int(record["pane_pid"]) > 0
+    tmux_kills: list[tuple[str, ...]] = []
+    signals: list[tuple[int, int]] = []
+    real_run, real_kill = backend._run, os.kill
+
+    def spy_run(*args, **kwargs):
+        if args and args[0] in ("kill-pane", "kill-session"):
+            tmux_kills.append(args)
+        return real_run(*args, **kwargs)
+
+    def spy_kill(pid, sig):
+        signals.append((pid, sig))
+        return real_kill(pid, sig)
+
+    backend._run = spy_run
+    os.kill = spy_kill
+    try:
+        assert backend.close(pane) is True
+    finally:
+        backend._run = real_run
+        os.kill = real_kill
+        if backend.liveness(pane) == "alive":
+            backend._run("kill-session", "-t", pane)
+            backend.registry.forget(pane)
+        backend._run("kill-server")
+    assert backend.liveness(pane) == "dead"
+    assert not tmux_kills, "close must never kill through the reusable session name or pane id"
+    assert signals, "close must signal the recorded pane process"
+    assert all(pid == int(record["pane_pid"]) for pid, _ in signals), "signals target the recorded process only"
+    assert signals[0][1] == signal.SIGTERM, "graceful termination is attempted before force"
+
+
+@needs_tmux
+def test_close_never_kills_a_replacement_after_the_ownership_check(tmp_path):
+    """A name-reuse race inside the check-to-kill window must spare the replacement."""
+    backend = make_backend(tmp_path)
+    pane = backend.host(("/bin/sleep", "60"), runtime="fixture", cwd=str(tmp_path), ident=backend.new_ident())
+    old = backend.current_instance(pane)
+    assert old is not None
+    real_live_owned = backend.live_owned
+
+    def racing_live_owned(target):
+        assert real_live_owned(target), "the original instance must verify first"
+        # The verified pane dies and its name is instantly reused by an
+        # unrelated process, inside the window before close() issues its kill.
+        backend._run("kill-session", "-t", pane)
+        backend._run("new-session", "-d", "-s", pane, "--", "/bin/sleep", "60")
+        return True
+
+    try:
+        backend.live_owned = racing_live_owned
+        assert backend.close(pane) is False, "an unprovable kill keeps the record and reports failure"
+        assert backend.liveness(pane) == "alive", "the replacement must survive the raced close"
+        assert backend.current_instance(pane) not in (None, old)
+        assert backend.registry.lookup(pane) is not None, "the failed close keeps ownership recoverable"
+    finally:
+        backend._run("kill-session", "-t", pane)
+        backend._run("kill-server")
+        backend.registry.forget(pane)
+    assert backend._run("list-sessions").returncode != 0, "no server may remain"
 
 
 @needs_tmux

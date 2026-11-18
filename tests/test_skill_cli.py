@@ -125,8 +125,8 @@ def test_plan_create_pure_and_refusals(tmp_path: Path) -> None:
     model = run_src(
         "plan", "create", "--runtime", "opencode", "--cwd", str(proj), "--model", "m", "--json", tmp_path=tmp_path
     )
-    assert model.returncode == 2
-    assert body(model)["error"]["code"] == "model_selection_unsupported"
+    assert model.returncode == 0
+    assert body(model)["data"]["launch"]["argv"][-2:] == ["--model", "m"]
 
 
 def test_session_create_dryrun_no_state(tmp_path: Path) -> None:
@@ -507,3 +507,179 @@ def test_acp_baseline_refusal_is_stderr_not_protocol(tmp_path: Path) -> None:
     assert proc.stdout == ""
     assert "cannot be served over ACP" in proc.stderr
     assert "hint:" in proc.stderr
+
+
+def test_argparse_usage_error_prints_envelope(tmp_path: Path) -> None:
+    """P0 契约：用法错误 stderr 保留 argparse usage、stdout 补 usage_error 信封。"""
+    proc = run_src("version", "--bogus", tmp_path=tmp_path)
+    assert proc.returncode == 2
+    assert "usage:" in proc.stderr
+    data = body(proc)
+    assert data["ok"] is False and data["data"] is None
+    assert data["error"]["code"] == "usage_error"
+    assert data["error"]["hint"]
+    joined = " ".join(data["error"]["next_commands"])
+    assert "describe" in joined and "--json" in joined
+
+
+def test_argparse_usage_error_targets_describe_at_the_command(tmp_path: Path) -> None:
+    """信封的 next_commands 指向出错命令自己的 describe 条目。"""
+    proc = run_src("run", "wait", "--run-id", "r", "--timeout", "abc", tmp_path=tmp_path)
+    assert proc.returncode == 2
+    data = body(proc)
+    assert data["error"]["code"] == "usage_error"
+    assert "run wait" in data["error"]["message"]
+    joined = " ".join(data["error"]["next_commands"])
+    assert 'describe --command "run wait"' in joined
+
+
+def test_acp_argparse_error_keeps_stdout_empty(tmp_path: Path) -> None:
+    """ACP 入口 stdout 归协议独占：argparse 用法错误只走 stderr。"""
+    proc = run_src("acp", tmp_path=tmp_path)
+    assert proc.returncode == 2
+    assert proc.stdout == ""
+    assert "usage:" in proc.stderr
+
+
+def test_not_found_envelope_carries_recovery(tmp_path: Path) -> None:
+    """P1 错误出路：not_found 带同 scope 的 session list 真实命令。"""
+    root = tmp_path / "root"
+    proc = run_src(
+        "session",
+        "resume",
+        "--session-id",
+        "ses_missing",
+        "--root",
+        str(root),
+        "--namespace",
+        "demo",
+        "--json",
+        tmp_path=tmp_path,
+    )
+    assert proc.returncode == 3
+    err = body(proc)["error"]
+    assert err["code"] == "not_found"
+    assert err["hint"]
+    joined = " ".join(err["next_commands"])
+    assert "session list" in joined and str(root) in joined and "--namespace demo" in joined and "--json" in joined
+
+
+def test_unknown_run_not_found_explains_no_listing(tmp_path: Path) -> None:
+    """未知 run id：hint 明说没有 run 列举命令（说清不可建议，而非留空）。"""
+    proc = run_src("run", "wait", "--run-id", "run_missing", "--root", str(tmp_path / "r"), "--json", tmp_path=tmp_path)
+    assert proc.returncode == 3
+    err = body(proc)["error"]
+    assert err["code"] == "not_found"
+    assert "no run listing" in (err["hint"] or "")
+
+
+def test_wait_timeout_error_carries_events_recovery() -> None:
+    """wait_timeout 的 next_commands 指向同一 run 的 run events（单测装饰逻辑）。"""
+    from types import SimpleNamespace
+
+    from agent_session_control.cli import _decorate_error
+    from agent_session_control.errors import ControlError
+
+    args = SimpleNamespace(command_name="run wait", run_id="run_x", root="/tmp/asc-demo", namespace="demo")
+    exc = _decorate_error(ControlError("wait_timeout", "the wait deadline passed", 6), args)
+    joined = " ".join(exc.next_commands)
+    assert "run events" in joined and "run_x" in joined and "/tmp/asc-demo" in joined
+
+
+def test_help_mirrors_risk_and_examples(tmp_path: Path) -> None:
+    """P1 自解释：--help 镜像风险等级与可复制示例。"""
+    proc = run_src("session", "create", "--help", tmp_path=tmp_path)
+    assert proc.returncode == 0
+    assert "risk: write_local" in proc.stdout
+    assert "examples:" in proc.stdout
+    assert "session create --runtime pi --cwd /tmp/proj" in proc.stdout
+    leaf = run_src("--help", tmp_path=tmp_path)
+    assert "Print package and interpreter versions" in leaf.stdout
+
+
+def test_dry_run_next_commands_replay_the_real_call(tmp_path: Path) -> None:
+    """dry-run 形状对齐：next_commands 复述真实调用（去掉 --dry-run）。"""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    root = tmp_path / "root"
+    proc = run_src(
+        "session",
+        "create",
+        "--runtime",
+        "codex",
+        "--cwd",
+        str(proj),
+        "--prompt",
+        "do it",
+        "--dry-run",
+        "--root",
+        str(root),
+        "--json",
+        tmp_path=tmp_path,
+    )
+    assert proc.returncode == 0
+    joined = " ".join(body(proc)["data"]["next_commands"])
+    assert "--runtime codex" in joined and "--cwd" in joined and str(proj) in joined
+    assert "--prompt do it" in joined and str(root) in joined
+    assert "--dry-run" not in joined
+
+
+def test_dry_run_stdin_input_suggests_nothing(tmp_path: Path) -> None:
+    """stdin 管道输入无法逐字回放：next_commands 为空而不是丢参数的建议。"""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    proc = run_src(
+        "session",
+        "create",
+        "--runtime",
+        "codex",
+        "--cwd",
+        str(proj),
+        "--prompt-file",
+        "-",
+        "--dry-run",
+        "--json",
+        stdin_text="piped brief",
+        tmp_path=tmp_path,
+    )
+    assert proc.returncode == 0
+    assert body(proc)["data"]["next_commands"] == []
+
+    submit = run_src(
+        "run",
+        "submit",
+        "--session-id",
+        "ses_x",
+        "--prompt-file",
+        "-",
+        "--request-id",
+        "k-1",
+        "--dry-run",
+        "--json",
+        stdin_text="piped brief",
+        tmp_path=tmp_path,
+    )
+    assert submit.returncode == 0
+    assert body(submit)["data"]["next_commands"] == []
+
+
+def test_run_submit_dry_run_reuses_generated_request_id(tmp_path: Path) -> None:
+    """dry-run 生成的幂等键进入 next_commands：真调用复用同一个键。"""
+    proc = run_src(
+        "run",
+        "submit",
+        "--session-id",
+        "ses_x",
+        "--prompt",
+        "do it",
+        "--dry-run",
+        "--root",
+        str(tmp_path / "r"),
+        "--json",
+        tmp_path=tmp_path,
+    )
+    assert proc.returncode == 0
+    data = body(proc)["data"]
+    joined = " ".join(data["next_commands"])
+    assert f"--request-id {data['run']['request_id']}" in joined
+    assert "--dry-run" not in joined

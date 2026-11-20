@@ -8,7 +8,7 @@ release gate is recorded in the README and `docs/INTEGRATION.md`.
 
 ## Outcome
 
-External applications can independently generate native launch/resume plans, control owned coding-agent sessions, submit and observe durable work, or expose those controls as an ACP agent. They can choose only the capabilities they need. No downstream product installation/configuration, UI framework, relay or vendor agent-team API is required. The initial implementation adapts existing proven mechanisms rather than starting an unrelated executor.
+External applications can independently generate native launch/resume plans, control owned coding-agent sessions, submit and observe durable work, expose those controls as an ACP agent, or start one session best-effort without pinning a runtime (`session create` auto mode). They can choose only the capabilities they need. No downstream product installation/configuration, UI framework, relay or vendor agent-team API is required. The initial implementation adapts existing proven mechanisms rather than starting an unrelated executor.
 
 ## Ownership and references
 
@@ -133,7 +133,7 @@ proof that an asynchronous binding race is fixed.
 
 ## Delivery and test obligations
 
-1. Pure launch plans preserve native argument semantics across the five currently supported extraction-source runtimes and explicit auto-approval/model policies. New adapters remain pluggable; no dormant runtime becomes a new visible product entry.
+1. Pure launch plans preserve native argument semantics across the five currently supported extraction-source runtimes and explicit auto-approval/model policies. New adapters remain pluggable; no dormant runtime becomes a new visible product entry. The one owner-approved best-effort mode lives on the existing `session create` entry (`--runtime` omitted): registry-ordered candidates, bounded backoff, observable attempt log, and no retry on uncertain outcomes; it adds no new command and hides no runtime choice on any other path.
 2. Terminal control proves pane ownership, readiness, multiline/Unicode paste and submit verification. Partial injection stays unknown and is not automatically replayed. Detached processes and sockets are cleaned only when owned by the test.
 3. Durable intent and same-transaction audit precede side effects; repeated immutable idempotency keys converge, changed payloads conflict. A stopped caller does not lose accepted durable work. Restarts do not replay uncertain terminal writes.
 4. Native identity, run/message correlation, generation resets, foreign input and inferred versus native finality remain observable. Completion means a turn ended, never that a semantic task passed acceptance.

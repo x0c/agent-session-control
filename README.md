@@ -2,7 +2,7 @@
 
 **Languages:** English | [简体中文](README.zh-CN.md)
 
-Launch and track local **Claude Code**, **Codex CLI**, **OpenCode**, **Cursor**, **Pi**, and **Antigravity** coding-agent sessions from Python: pure launch plans, audited runs, and per-session stdio MCP wiring. Also ships an [agent-client-protocol](https://github.com/agentclientprotocol/agent-client-protocol) (ACP) adapter.
+Launch and track local **Claude Code**, **Codex CLI**, **OpenCode**, **Cursor**, **Pi**, and **Antigravity** coding-agent sessions from Python: pure launch plans, best-effort session start with runtime fallback, audited runs, and per-session stdio MCP wiring. Also ships an [agent-client-protocol](https://github.com/agentclientprotocol/agent-client-protocol) (ACP) adapter.
 
 This is a **Python library + JSON CLI + ACP adapter** — not a TUI, not a session manager, not a history parser (history observation is delegated to [SessKit](https://github.com/x0c/sesskit)).
 
@@ -10,6 +10,11 @@ This is a **Python library + JSON CLI + ACP adapter** — not a TUI, not a sessi
 [![CI](https://github.com/x0c/agent-session-control/actions/workflows/ci.yml/badge.svg)](https://github.com/x0c/agent-session-control/actions/workflows/ci.yml)
 
 Status: 0.1.4 (see [docs/INTEGRATION.md](docs/INTEGRATION.md) and [docs/CONTRACT.md](docs/CONTRACT.md)). Per-runtime limits are listed below.
+
+Supported CLI versions (verified 2026-11-13): Claude Code 2.1.303, Codex
+CLI 0.137.0, OpenCode 1.19.5, Cursor agent 2026.09.23-86fc751, and Pi 1.5.2.
+Only the latest released CLI of each runtime is supported; older versions
+are out of scope — no version sniffing, no legacy branches.
 
 ## Install
 
@@ -49,6 +54,14 @@ The same [wheel and source archive](https://github.com/x0c/agent-session-control
   sends a model request. Caller defaults are preserved (no model flag, no
   approval relaxation unless requested). Unsupported options fail before
   launch instead of silently degrading.
+- **Best-effort session start** (`agent_session_control.besteffort`): `session create`
+  with `--runtime` omitted tries candidates in registry order — availability-gated,
+  per-runtime backoff retries, cross-runtime fallback — and an optional `--prompt`
+  submits the first turn through the durable path inside a bounded confirm window
+  (login/quota fast failures close the session and fall back). Every step lands in
+  the output attempt log; total failure is the stable `create_exhausted` error.
+  Uncertain outcomes are reported, never auto-retried. An explicit `--runtime`
+  keeps today's single-attempt semantics unchanged.
 - **Per-session stdio MCP** (`mcp_servers=`): verified launch-only channels
   for `claude` / `codex` / `opencode`, each proven end-to-end with a
   disposable stdio fixture against the real installed CLI (no global config
@@ -82,6 +95,15 @@ Core imports need only the standard library. Optional extras:
 
 ## Quick use
 
+One command, no runtime choice — best-effort start with backoff and fallback:
+
+```sh
+python -m agent_session_control session create --cwd /path/to/project \
+  --prompt "fix the login retry" --json
+# data.attempts records every candidate step; data.run.state is
+# completed | running (still working) | interrupted | unknown (unattributed).
+```
+
 ```python
 from agent_session_control import build_create_plan, build_resume_plan, runtime_profile
 
@@ -94,7 +116,8 @@ resume = build_resume_plan("claude", {"id": "<exact-native-id>", "cwd": "/path/t
 print(resume.argv)
 
 with_mcp = build_create_plan(
-    "claude", "/path/to/project",
+    "claude",
+    "/path/to/project",
     mcp_servers=[{"name": "docs", "command": "/usr/local/bin/docs-mcp", "env": {"API_KEY": "..."}}],
 )
 print(with_mcp.to_dict())  # redacted projection: no secret values, secret-free argv
@@ -108,9 +131,12 @@ print(runtime_profile("cursor"))  # capabilities, interrupt keys, limitations
 from agent_session_control import RunStore
 
 store = RunStore()  # ~/.config/agent-session-control/control/runs.sqlite3
-record, created = store.create("local-user", "request-key-1",
-                               {"target": "claude:<id>", "text": "..."},
-                               {"execution": "queued", "delivery": "accepted"})
+record, created = store.create(
+    "local-user",
+    "request-key-1",
+    {"target": "claude:<id>", "text": "..."},
+    {"execution": "queued", "delivery": "accepted"},
+)
 ```
 
 SDK lifecycle (live; spends quota, needs runtime login):
@@ -120,6 +146,7 @@ import asyncio
 import tempfile
 from pathlib import Path
 from agent_session_control.controller import LocalController
+
 
 async def main() -> None:
     # Selected temp project + isolated control root: never a fixed /tmp path.
@@ -131,7 +158,8 @@ async def main() -> None:
         try:
             handle = await controller.create("claude", project)
             run_id = await controller.start_turn(
-                handle.id, [{"type": "text", "text": "Reply with ACK."}], request_id="demo-1")
+                handle.id, [{"type": "text", "text": "Reply with ACK."}], request_id="demo-1"
+            )
             assert run_id.startswith("run_"), run_id  # exact run identity
             result = await controller.wait(run_id, timeout=120.0)
             print(result.state, result.evidence)
@@ -142,6 +170,7 @@ async def main() -> None:
             # Public-API cleanup only: releases the pane; keeps history.
             if handle is not None:
                 await controller.close_session(handle.id)
+
 
 asyncio.run(main())
 ```
@@ -154,7 +183,7 @@ python -m agent_session_control version --json
 
 python -m agent_session_control plan create --runtime codex --cwd /tmp/demo-proj --json
 # {"ok": true, "data": {"dry_run": true, "status": "planned",
-#   "launch": {"argv": ["codex", "--no-daemon"], "cwd": "/tmp/demo-proj", "env_keys": []}}, ...}
+#   "launch": {"argv": ["codex"], "cwd": "/tmp/demo-proj", "env_keys": []}}, ...}
 
 python -m agent_session_control session create --runtime codex --cwd /tmp/demo-proj \
   --dry-run --json --root /tmp/demo-control
@@ -181,14 +210,16 @@ run these paths end to end.
 | Pure plans | yes | yes | yes | yes | yes | yes |
 | Owned hosting + liveness + close (no prompt) | yes | yes | yes | yes | yes | yes |
 | Native turn (login/quota-gated, spends quota) | gated | gated | gated | gated | gated | gated |
-| Per-session MCP launch channel | headless-verified | headless-verified | headless-verified | refused | refused | refused |
-| Hosted TUI MCP delivery | pending host run | pending host run | launcher-owned only | refused (`unsupported`) | refused (`unsupported`) | refused (`unsupported`) |
+| Per-session MCP launch channel | headless-verified | headless-verified | config-verified (1.19.5); live re-verification pending | refused | refused | refused |
+| Hosted TUI MCP delivery | pending host run | pending host run | pending host run | refused (`unsupported`) | refused (`unsupported`) | refused (`unsupported`) |
 | ACP serving over this runtime | yes | yes | yes | SDK/CLI only | SDK/CLI only | SDK/CLI only (`agy acp` native) |
 
 Headless proof: disposable stdio fixtures against the real installed CLIs
-(`claude -p`, `codex exec`, `opencode --standalone run`) with no global
-config touched. Hosted TUI delivery shares the same argv/env channel but is
-pending a host run (final hosted-MCP truth lives with the adapter/backend
+(`claude -p`, `codex exec`, `opencode run`) with no global
+config touched. The OpenCode env channel additionally resolves offline on
+1.19.5 (`debug config`, `mcp list`); its live model-backed delivery is
+pending re-verification. Hosted TUI delivery shares the same argv/env channel
+but is pending a host run (final hosted-MCP truth lives with the adapter/backend
 owners, see `docs/ACP.md`, `docs/BACKENDS.md`). Availability probes report
 executable presence only — never login, quota, or model entitlement.
 Unavailable login/quota surface as explicit limits, not passes.
@@ -216,7 +247,8 @@ it adds no new lifecycle.
 ## Limitations
 
 - Cursor, Pi, and Antigravity read MCP servers only from persistent config files, so per-session `mcp_servers=` is refused as `unsupported` (no silent downgrade). Note `agy acp` is provided natively by the `agy` CLI.
-- OpenCode per-session MCP takes effect only when the launcher owns the server; an ambient background service ignores it.
+- OpenCode per-session MCP takes effect only when the launcher owns the server; an ambient background service ignores it. The channel travels in the private process env; on 1.19.5 the document resolves (`debug config`, `mcp list`) with no flag (the pre-1.19 `--standalone` no longer exists), but live delivery has not been re-verified on 1.19.5.
+- Claude Code and Codex CLI show a first-launch workspace-trust dialog in a fresh directory (Claude's default is "No, exit"); the library refuses to inject through it, so the first submission there needs a one-time trust confirmation (host hook or human). Each runtime then remembers the choice; Claude's headless `-p` mode skips the dialog. A completely fresh Claude configuration adds first-run onboarding screens (theme picker, login-method selection) that own the keyboard the same way; detected screens are refused deterministically (the run settles `failed` with `startup_dialog` and an actionable message) instead of typing into the wizard.
 - `completed` means the correlated turn ended, never that a task passed acceptance. Missing usage stays `null`.
 - Live control spends model quota and needs the runtime executable plus login. Disposable project/state roots isolate control state only: hosting may still record native history under the runtime's standard locations, and `close_session` never deletes it.
 

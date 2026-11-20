@@ -22,3 +22,7 @@ fp:05dec3453c408664
 # tests/test_engine_fidelity.py — durable-flaky-1 is a local idempotency key
 # for the append-failure fixture, not an API authentication key.
 fp:a1984db59da9bfed
+fp:b4c4113a816340af
+# tests/test_skill_cli.py — explicit synthetic redaction canary
+# (SYNTHETIC_SECRET = "SYNTHETIC_SKILL_SECRET_NOT_A_CREDENTIAL"), same class as fp:49e12566dc92f5b6.
+fp:f49cb1fc218b6e63

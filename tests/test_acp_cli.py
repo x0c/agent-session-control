@@ -181,10 +181,10 @@ def test_plan_create_pure_and_backend_gap_visible(tmp_path: Path) -> None:
     proc = run_cli("plan", "create", "--runtime", "codex", "--cwd", str(proj), "--json")
     assert proc.returncode == 0
     assert envelope(proc)["data"]["launch"]["argv"][0] == "codex"
-    # opencode has no verified per-launch model flag: must fail, never fall back.
-    bad = run_cli("plan", "create", "--runtime", "opencode", "--cwd", str(proj), "--model", "m", "--json")
-    assert bad.returncode == 2
-    assert envelope(bad)["error"]["code"] == "model_selection_unsupported"
+    # opencode 1.19.5 accepts -m/--model on the hosted root command.
+    with_model = run_cli("plan", "create", "--runtime", "opencode", "--cwd", str(proj), "--model", "m", "--json")
+    assert with_model.returncode == 0
+    assert envelope(with_model)["data"]["launch"]["argv"][-2:] == ["--model", "m"]
     rel = run_cli("plan", "create", "--runtime", "codex", "--cwd", "relative", "--json")
     assert rel.returncode == 2
     assert (tmp_path / "root").exists() is False
@@ -407,6 +407,67 @@ def test_follow_jsonl_event_protocol(tmp_path: Path, capsys: pytest.CaptureFixtu
     assert lines[0]["type"] == "start" and lines[0]["run_id"] == run_id
     assert any(line["type"] == "record" for line in lines)
     assert lines[-1]["type"] == "end" and lines[-1]["reason"] == "settled"
+
+
+def test_follow_timeout_is_hard_deadline_during_silence(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    """A silent event source cannot outlive ``--follow --timeout``.
+
+    Regression: the deadline used to be checked only after the next event,
+    so a watch generator that stayed silent (SLOW run: long sleep, no
+    events) ended after the silence, not at the timeout. The deadline is a
+    hard cutoff now; the timeout end never cancels the run, which still
+    settles afterwards via ``run wait``.
+    """
+    import time as _time
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    controller = FakeController()
+    code, body = main_with_fake(
+        ["session", "create", "--runtime", "fake-test", "--cwd", str(proj), "--json"], controller, capsys
+    )
+    session_id = body["data"]["session"]["id"]
+    # SLOW 2: the watch generator sleeps ~2s before its first event.
+    code, body = main_with_fake(
+        ["run", "submit", "--session-id", session_id, "--prompt", "SLOW 2 silent watch", "--json"],
+        controller,
+        capsys,
+    )
+    run_id = body["data"]["run"]["run_id"]
+    capsys.readouterr()
+    started = _time.monotonic()
+    code = cli_mod.main(
+        ["run", "events", "--run-id", run_id, "--follow", "--timeout", "0.25"],
+        controller_factory=lambda _args: controller,
+    )
+    elapsed = _time.monotonic() - started
+    assert code == 0
+    # Hard cutoff: must end within the timeout plus a small margin, never
+    # wait out the full ~2s silent period of the watch source.
+    assert elapsed < 1.2, f"follow outlived the deadline during silence: {elapsed:.3f}s"
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert lines[0]["type"] == "start" and lines[0]["run_id"] == run_id
+    assert lines[-1]["type"] == "end" and lines[-1]["reason"] == "timeout"
+    assert "never cancels the run" in lines[-1]["note"]
+    # The timeout did not cancel the work: the run stays live, not
+    # interrupted (this fake settles runs only through a completed watch).
+    assert controller.runs[run_id]["state"] == "running"
+
+
+def test_argparse_usage_error_keeps_usage_and_adds_envelope() -> None:
+    """Argparse usage errors (missing required flag) keep the argparse usage
+    text on stderr with exit 2 and additionally print a ``usage_error``
+    envelope on stdout pointing at ``describe`` (the documented skill
+    contract)."""
+    proc = run_cli("run", "wait", "--json")
+    assert proc.returncode == 2
+    assert "usage:" in proc.stderr
+    body = envelope(proc)
+    assert body["ok"] is False and body["data"] is None
+    assert body["error"]["code"] == "usage_error"
+    assert "run wait" in body["error"]["message"]
+    assert body["error"]["hint"]
+    assert "describe" in " ".join(body["error"]["next_commands"])
 
 
 def test_submit_unknown_session_is_not_found_exit_3(capsys: pytest.CaptureFixture) -> None:

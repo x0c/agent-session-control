@@ -1,16 +1,17 @@
-"""Security: secret-safe tmux transport, MCP file channel, opencode standalone.
+"""Security: secret-safe tmux transport, MCP file channel, opencode MCP argv.
 
 Proves the 0.1.0 defect is closed: ``plan.env`` values never appear in any
 intermediate tmux argv (no ``-e NAME=value``), travel instead through a
 single-use private socket rendezvous to the pane, and never reach
 server-global state, sibling sessions, diagnostics or stored records.
 Covers hostile characters, per-session scope, failure cleanup, CLI file
-input and launcher-owned opencode MCP.
+input and the opencode env-channel MCP argv.
 """
 
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 
@@ -51,18 +52,19 @@ def test_plan_argv_never_carries_env_secrets(tmp_path):
         assert SECRET not in repr(resumed)
 
 
-def test_opencode_uses_launcher_owned_standalone(tmp_path):
+def test_opencode_mcp_argv_carries_no_removed_flags(tmp_path):
     cwd = str(tmp_path)
     plain = build_create_plan("opencode", cwd, auto_approve=True)
     assert plain.argv == ("opencode", "--auto")
     with_mcp = build_create_plan("opencode", cwd, auto_approve=True, mcp_servers=[_server()])
-    assert with_mcp.argv == ("opencode", "--standalone", "--auto")
-    assert "--standalone" in " ".join(with_mcp.argv)
+    # opencode 1.19.5 removed --standalone; the env channel needs no flag.
+    assert with_mcp.argv == ("opencode", "--auto")
+    assert "--standalone" not in " ".join(with_mcp.argv)
     assert SECRET not in " ".join(with_mcp.argv)
     resume_plain = build_resume_plan("opencode", {"id": "abc", "cwd": cwd}, auto_approve=True)
     assert resume_plain.argv == ("opencode", "--auto", "-s", "abc")
     resume_mcp = build_resume_plan("opencode", {"id": "abc", "cwd": cwd}, auto_approve=True, mcp_servers=[_server()])
-    assert resume_mcp.argv == ("opencode", "--standalone", "--auto", "-s", "abc")
+    assert resume_mcp.argv == ("opencode", "--auto", "-s", "abc")
 
 
 def _capture_backend(tmp_path, namespace):
@@ -559,8 +561,10 @@ def test_handshake_replacement_never_killed_and_failed_cleanup_safe(tmp_path, mo
     assert accept_calls == [], "refusal must precede the rendezvous accept"
     assert kill_calls == [], f"replacement must not be killed, got {kill_calls!r}"
     assert backend.registry.lookup("asc-repl-pane") is None
-    # Failed cleanup path: witness still current but kill raises; host must
-    # still report launch_failed, never success, never adopt.
+    # Failed cleanup path: witness still current but the signal cannot be
+    # delivered; host must still report launch_failed, never success, never
+    # adopt. Cleanup targets the pinned witnessed pid with signals, never a
+    # tmux kill command (names/pane ids are reusable, pids are not).
     kill_calls.clear()
     seq2 = iter([witness, witness])
 
@@ -572,17 +576,22 @@ def test_handshake_replacement_never_killed_and_failed_cleanup_safe(tmp_path, mo
 
     monkeypatch.setattr(backend, "current_instance", fake_instance2)
 
-    def fake_run_fail_kill(*args, **kwargs):
+    def fake_run_alive(*args, **kwargs):
         if args and args[0] == "new-session":
             return subprocess.CompletedProcess(args, 0, stdout=b"%99:12345\n", stderr=b"")
-        if args and args[0] in ("kill-pane", "kill-session"):
-            kill_calls.append(list(args))
-            raise OSError("kill failed")
         if args and args[0] == "has-session":
             return subprocess.CompletedProcess(args, 0, stdout=b"", stderr=b"")
         return subprocess.CompletedProcess(args, 0, stdout=b"", stderr=b"")
 
-    monkeypatch.setattr(backend, "_run", fake_run_fail_kill)
+    monkeypatch.setattr(backend, "_run", fake_run_alive)
+
+    signal_targets: list[tuple[int, int]] = []
+
+    def fail_signal(pid, sig):
+        signal_targets.append((pid, sig))
+        raise OSError("signal delivery failed")
+
+    monkeypatch.setattr(os, "kill", fail_signal)
     with pytest.raises(TmuxError) as exc2:
         backend._host_with_private_env(
             "asc-repl-pane2",
@@ -593,7 +602,11 @@ def test_handshake_replacement_never_killed_and_failed_cleanup_safe(tmp_path, mo
             ident="replident2",
         )
     assert exc2.value.code == "launch_failed"
-    assert kill_calls and kill_calls[0][0] == "kill-pane" and kill_calls[0][2] == "%99"
+    # Cleanup attempted a signal against the pinned witnessed pid (12345)
+    # and never issued a tmux kill command; the failing signal keeps the
+    # outcome an honest launch failure.
+    assert signal_targets and signal_targets[0] == (12345, signal.SIGTERM), signal_targets
+    assert kill_calls == [], f"cleanup must not use tmux kills, got {kill_calls!r}"
 
 
 def test_replacement_before_and_after_accept_sends_zero_secret_bytes(tmp_path, monkeypatch):

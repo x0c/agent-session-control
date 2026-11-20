@@ -74,7 +74,16 @@ def test_production_default_detached_codex_turn(tmp_path):
     assert handle.native_id is None, "codex has no preassignable id; nothing is fabricated before binding"
     pane = controller.sessions.get(handle.id)["pane"]
     try:
-        assert backend.wait_ready(pane, ("OpenAI Codex",), timeout=180.0), "the codex TUI never became ready"
+        # codex 0.137.0 greets a fresh workspace with a trust dialog (default:
+        # Yes, continue) before the TUI. This test owns the disposable
+        # workspace, so confirm it once here; the library itself never
+        # answers trust prompts.
+        from agent_session_control.terminal import plain_text
+
+        screen = plain_text(backend.capture(pane) or "")
+        if "Do you trust" in screen:
+            assert backend.send_key_detailed(pane, "Enter").ok, "could not confirm the workspace trust dialog"
+        assert backend.wait_ready(pane, ("Welcome to Codex",), timeout=180.0), "the codex TUI never became ready"
 
         env = dict(os.environ)
         env["PYTHONPATH"] = os.path.join(REPO, "src")

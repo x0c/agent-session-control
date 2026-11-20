@@ -530,6 +530,51 @@ def script_observation(
     }
 
 
+def write_claude_history(path, run_id, *, reply="ACK", message_id="initial", namespace=MARKER_NAMESPACE):
+    """Write a minimal claude-format JSONL history holding one marked turn.
+
+    Tests that exercise the real SessKit reader path use this instead of
+    spending a real Claude turn: the user line carries the run-unique wire
+    marker and the assistant line ends the turn.
+    """
+    import json
+
+    lines = [
+        {
+            "parentUuid": None,
+            "isSidechain": False,
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": f"Reply with ACK and nothing else.\n\n[{namespace} run={run_id} message={message_id}]",
+            },
+            "uuid": "u1",
+            "timestamp": "2026-11-13T08:43:28.654Z",
+            "cwd": "/tmp",
+            "sessionId": "sess-fixture",
+            "version": "2.1.303",
+        },
+        {
+            "parentUuid": "u1",
+            "isSidechain": False,
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": reply}],
+                "stop_reason": "end_turn",
+            },
+            "type": "assistant",
+            "uuid": "a1",
+            "timestamp": "2026-11-13T08:43:34.632Z",
+            "cwd": "/tmp",
+            "sessionId": "sess-fixture",
+            "version": "2.1.303",
+        },
+    ]
+    with open(path, "w", encoding="utf-8") as handle:
+        for line in lines:
+            handle.write(json.dumps(line) + "\n")
+
+
 class ScriptHistory:
     """Scripted observation queue: each poll pops the next script entry."""
 
@@ -832,6 +877,26 @@ class _Plan:
 def file_store_factory(root: str, namespace: str = "default"):
     """Store factory for the detached-supervisor test (importable cross-process)."""
     return FileStore(root)
+
+
+def certain_reject_file_hooks_factory(root: str, namespace: str = "default"):
+    """Detached-entry regression fixture: submit refuses with the canonical class.
+
+    Mirrors the production controller hooks, which import ``CertainFailure``
+    from the canonical module: a ``python -m`` entry that runs a second copy
+    of the supervisor module lets this refusal escape dispatch's except
+    clause and settle through the crash path as ``unknown``; a delegating
+    entry settles it as a certain rejection (delivery=rejected,
+    execution=failed) with the code preserved.
+    """
+    import dataclasses
+
+    from agent_session_control.supervisor import CertainFailure
+
+    def refuse(ref, text):
+        raise CertainFailure("startup_dialog", "the pane shows a startup dialog; refusing input")
+
+    return dataclasses.replace(file_hooks_factory(root, namespace), submit=refuse)
 
 
 def file_hooks_factory(root: str, namespace: str):

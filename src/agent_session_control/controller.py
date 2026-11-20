@@ -217,7 +217,11 @@ class _SessionRegistry:
             os.chmod(self.path, 0o600)
         else:
             if not self.path.is_file():
-                raise ControlError("not_found", "no controlled sessions exist yet")
+                raise ControlError(
+                    "not_found",
+                    "no controlled sessions exist yet",
+                    hint="Create one first: session create --runtime <runtime> --cwd <project-dir>.",
+                )
             conn = sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True, timeout=15)
         conn.row_factory = sqlite3.Row
         return conn
@@ -275,7 +279,11 @@ class _SessionRegistry:
         finally:
             conn.close()
         if row is None:
-            raise ControlError("not_found", f"unknown controlled session: {session_id}")
+            raise ControlError(
+                "not_found",
+                f"unknown controlled session: {session_id}",
+                hint="session list with the same --root/--namespace shows every session that exists.",
+            )
         return dict(row)
 
     def find_by_native(self, runtime: str, native_id: str) -> dict | None:
@@ -531,6 +539,7 @@ class LocalController:
         spawn: bool = True,
         supervisor_factory: str = DEFAULT_HOOKS_FACTORY,
         supervisor_store_factory: str = DEFAULT_STORE_FACTORY,
+        host_liveness_probes: tuple[float, ...] = (0.0, 0.2, 0.5, 1.0),
     ):
         self.root = Path(root) if root is not None else default_root()
         self.namespace = namespace or "default"
@@ -553,6 +562,9 @@ class LocalController:
         self.spawn = spawn
         self.supervisor_factory = supervisor_factory
         self.supervisor_store_factory = supervisor_store_factory
+        # Delays before each post-host liveness probe (injectable for tests);
+        # the first is immediate so healthy launches never wait.
+        self.host_liveness_probes = tuple(host_liveness_probes) or (0.0,)
         self._threads: list[threading.Thread] = []
         self._children: dict[str, subprocess.Popen] = {}
         self._children_guard = threading.Lock()
@@ -813,6 +825,25 @@ class LocalController:
 
     # -- port: create / resume -----------------------------------------------------
 
+    async def _confirm_hosted_alive(self, pane: str) -> bool:
+        """Bounded post-host liveness proof; probe delays are injectable.
+
+        The first probe is immediate, so a healthy launch (trust prompts
+        included) passes without waiting. Only a pane that stays dead across
+        the whole confirmation window fails; an ``unknown`` verdict never
+        fails a launch, since it cannot prove target loss.
+        """
+        for index, delay in enumerate(self.host_liveness_probes):
+            if index:
+                await asyncio.sleep(delay)
+            try:
+                verdict = self.backend.liveness(pane)
+            except Exception:
+                verdict = "unknown"
+            if verdict != "dead":
+                return True
+        return False
+
     async def create(
         self, runtime: str, cwd: str, *, model: str | None = None, mcp_servers: Any = (), actor: str = "local-user"
     ) -> SessionHandle:
@@ -898,6 +929,15 @@ class LocalController:
             raise ControlError(
                 getattr(exc, "code", "launch_failed"), getattr(exc, "message", str(exc)) or "could not host the session"
             ) from exc
+        if not await self._confirm_hosted_alive(pane):
+            # The runtime exited within the confirmation window (e.g. an
+            # incompatible CLI argv): report an honest launch failure over
+            # the existing failed-row path instead of hosting a dead pane.
+            self.sessions.put(failed_row, actor=actor, action="session.host_failed")
+            raise ControlError(
+                "launch_failed",
+                "the runtime exited immediately after launch; check the CLI version and startup arguments",
+            )
         self.sessions.put(
             {
                 "id": handle.id,
@@ -925,7 +965,11 @@ class LocalController:
                 raise
             found = self.sessions.find_by_native(runtime_id, native)
             if found is None:
-                raise ControlError("not_found", f"unknown controlled session: {session_id}") from exc
+                raise ControlError(
+                    "not_found",
+                    f"unknown controlled session: {session_id}",
+                    hint="session list with the same --root/--namespace shows every session that exists.",
+                ) from exc
             row = found
         return SessionHandle(
             id=row["id"],
@@ -1113,7 +1157,11 @@ class LocalController:
             raise ControlError("usage_error", f"unknown on_busy mode: {on_busy}")
         row = self.sessions.get(session_id)
         if row.get("status") == "closed":
-            raise ControlError("not_found", "this session is closed; create or resume a new one")
+            raise ControlError(
+                "not_found",
+                "this session is closed; create or resume a new one",
+                hint="session list shows the remaining sessions; create a new one or resume another.",
+            )
         brief, _normalized = self._check_blocks(prompt)
         if on_busy == "steer" and not self.capabilities(row["runtime"])["steer"]:
             raise ControlError(
@@ -1365,7 +1413,10 @@ class LocalController:
             if deadline is not None and time.monotonic() >= deadline:
                 # A wait timeout never cancels work; the run continues.
                 raise ControlError(
-                    "wait_timeout", "the wait deadline passed; the run continues", details={"run_id": run_id}
+                    "wait_timeout",
+                    "the wait deadline passed; the run continues",
+                    hint="Observe with run events and wait again while the run is still going.",
+                    details={"run_id": run_id},
                 )
             await asyncio.sleep(0.5)
 
@@ -1384,16 +1435,44 @@ class LocalController:
     # -- port: interrupt / close / list / history ----------------------------------------------
 
     async def interrupt(self, run_id: str, *, actor: str = "local-user") -> None:
-        try:
-            record = self.run_store.get(run_id)
-        except Exception as exc:
-            raise self._store_error(exc, "interrupt") from exc
-        if record.get("execution") in ("completed", "failed", "interrupted", "unknown"):
-            return
-        try:
-            self.run_store.cancel_queued(run_id, actor, f"interrupt:{uuid.uuid4().hex[:12]}", record.get("version", ""))
-        except Exception as exc:
-            raise self._store_error(exc, "interrupt") from exc
+        # The run version can move between our read and enqueue (a supervisor
+        # delivery update or settlement lands in that window). Retry with a
+        # fresh version instead of failing the interrupt; a run that settles
+        # in the meantime stays a silent no-op, like a terminal run seen on
+        # the initial read. An undispatched queued run is cancelled atomically.
+        for attempt in range(4):
+            try:
+                record = self.run_store.get(run_id)
+            except Exception as exc:
+                raise self._store_error(exc, "interrupt") from exc
+            if record.get("execution") in ("completed", "failed", "interrupted", "unknown"):
+                return
+            key = f"interrupt:{uuid.uuid4().hex[:12]}"
+            try:
+                if (
+                    record.get("delivery") == "accepted"
+                    and record.get("execution") == "queued"
+                    and callable(getattr(self.run_store, "cancel_queued", None))
+                ):
+                    self.run_store.cancel_queued(run_id, actor, key, record.get("version", ""))
+                else:
+                    self.run_store.enqueue(
+                        run_id,
+                        actor,
+                        key,
+                        {"action": "interrupt"},
+                        record.get("version", ""),
+                    )
+                return
+            except Exception as exc:
+                code = getattr(exc, "code", None)
+                if code == "terminal_run":
+                    # Settled between read and cancel/enqueue: nothing to interrupt.
+                    return
+                if code != "conflict" or attempt >= 3:
+                    raise self._store_error(exc, "interrupt") from exc
+                # The race window is tiny; minimal backoff before re-reading.
+                await asyncio.sleep(0.01)
 
     async def close_session(self, session_id: str, *, actor: str = "local-user") -> None:
         """Cancel accepted work, release the owned pane, keep native history.

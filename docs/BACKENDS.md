@@ -9,6 +9,15 @@ the evidence in the last section. Tests never attach to, stop or mutate
 existing user sessions. Native history interpretation remains owned by
 SessKit.
 
+## Supported CLI versions
+
+Compatibility tracks only the latest released CLI of each runtime, verified
+2026-11-13: Claude Code 2.1.303, Codex CLI 0.137.0, OpenCode 1.19.5, Cursor
+agent 2026.09.23-86fc751, and Pi 1.5.2. Older CLI versions are out of scope:
+there is no version sniffing and no legacy branches — flags removed upstream
+(Codex `--no-daemon`, OpenCode `--standalone`) are simply dropped from
+plans.
+
 ## Modules
 
 | Module | Owns |
@@ -58,8 +67,8 @@ is earned afterwards through exact evidence (see below).
 | Runtime | Interrupt keys | Composer rule | Model flag | Resume plan | Binding path |
 |---|---|---|---|---|---|
 | claude | Escape | between_rules | `--model` | `--resume <exact-id>` | exact-id scan, marker evidence, or host claim |
-| codex | Escape | codex_chevron | `--model` | `resume --no-daemon <exact-id>` | marker evidence or host claim (no preassign flag) |
-| opencode | Escape, Escape | opencode_bars | none (`model_selection_unsupported`) | `-s <exact-id>` | marker evidence or host claim |
+| codex | Escape | codex_chevron | `--model` | `resume <exact-id>` | marker evidence or host claim (no preassign flag) |
+| opencode | Escape, Escape | opencode_bars | `--model` | `-s <exact-id>` | marker evidence or host claim |
 | cursor | C-c | cursor_arrow | `--model` | `--resume <exact-id>` | marker evidence or host claim |
 | pi | Escape | between_rules | `--model` | `--session <exact-path>` | path-addressed claim or marker evidence |
 | antigravity | Escape | antigravity (`between_rules` layout) | `--model` | `--conversation <exact-id>` | marker evidence or host claim |
@@ -69,7 +78,20 @@ every built-in (no true steering in the generic backend), `interrupt`
 reflects the key table, `model_selection` reflects the flag table, MCP is
 `unsupported` unless a profile declares `supports_mcp`, `resume` states its
 exact-locator requirement, `load_history` requires a bound native history.
-Availability means executable presence only, never login or quota.
+Availability means executable presence only, never login or quota. The
+opencode `-m/--model` (provider/model format) is accepted by the 1.19.5
+hosted root command and the selected model shows in the TUI model
+selector; an actual model turn was not run, so turn-level effect stays
+unverified (a real turn spends quota).
+
+Startup trust dialogs: Claude Code 2.1.303 and Codex CLI 0.137.0 both show a
+first-launch workspace/directory trust dialog in an unconfirmed directory
+(Claude's default is "No, exit"; Codex's is "Yes, continue"). No launch flag
+skips Claude's dialog interactively (only non-interactive `-p` does), and
+Codex has no trust flag either. The library never answers a trust dialog on
+the user's behalf: a fresh directory needs a one-time confirmation (host
+hook or human) before the first submission, after which each runtime itself
+remembers the choice.
 
 Antigravity (`agy`) empirical limits (`1.5.8` probed in a disposable workspace):
 `--settings` accepts `settings.json` keys only and rejects `mcpServers`
@@ -215,8 +237,9 @@ applies the bound). No second projection algorithm lives in the engine.
   after accept immediately before sending, so a replacement before accept or
   between accept and send receives zero secret bytes (connection closed
   unsent). Delivery
-  failures clean up only that exact witnessed instance via
-  `kill-pane -t <pane_id>` (never the reusable session name). A
+  failures clean up only that exact witnessed instance by signalling the
+  pinned witnessed pid (SIGTERM, then SIGKILL; never a reusable session name
+  or pane id, both of which can be reused after a server restart). A
   replacement/foreign process, an unreadable instance, or a missing witness
   is left alone, and finish verifies the witness before recording (never a
   blind `kill-session -t <name>`). Errors never format values into messages,
@@ -264,12 +287,13 @@ applies the bound). No second projection algorithm lives in the engine.
   foreign-pane close refusal, replacement-process refusal with the replacement
   left alive, dead-pane record cleanup (`tests/test_engine_terminal.py`, 16
   tests; `tests/ test_security_transport.py` for secret transport, MCP file
-  channel and opencode standalone).
+  channel and opencode MCP argv).
 - MCP launch channels: Claude `--mcp-config` with `${NAME}` references,
   Codex `-c mcp_servers.*` with `env_vars` forwarding, OpenCode
-  `OPENCODE_CONFIG_CONTENT` with launcher-owned `--standalone` (verified via
-  `--standalone debug config` and `--standalone run` on v2.2.5; ambient
-  service ignores the env). CLI accepts `--mcp-servers-file PATH` (`-` for
+  `OPENCODE_CONFIG_CONTENT` (offline on 1.19.5: `debug config` resolves the
+  document and `mcp list` attempts its servers with no extra flag; the
+  pre-1.19 `--standalone` private-server flag no longer exists and is never
+  passed; live model-backed delivery not re-verified on 1.19.5). CLI accepts `--mcp-servers-file PATH` (`-` for
   piped stdin) mutually exclusive with inline `--mcp-servers` by presence;
   file/stdin reads are bounded, oversized/invalid-UTF-8/missing inputs refuse
   as `usage_error` without echo or traceback; dry-run emits only redacted
@@ -309,7 +333,57 @@ applies the bound). No second projection algorithm lives in the engine.
   executables present, logins unverified; Antigravity composer/trust/CLI
   flags probed in a disposable workspace without model calls), Windows or
   non-tmux platforms,
-  hostile-tenant isolation, and billing/cost semantics. Replay and final
+  hostile-tenant isolation, billing/cost semantics, and first-launch
+  trust-dialog confirmation flows (recorded above as a one-time
+  host/human step; the library never answers them). Replay and final
   responses are lossless by default through foundation `project_event` /
   `build_result(..., text_limit=None)` (verified live). Unsupported paths
   fail with explicit codes instead of passing silently.
+
+### Local launch and input re-verification (0.1.1, 2026-11-13)
+
+- **Claude Code 2.1.303: passed.** A fresh session in an isolated empty
+  directory launched through the JSON CLI; the pane first showed Claude's
+  workspace-trust dialog (default "No, exit"), which needed a one-time
+  confirmation in the test terminal before injection. `run submit` then
+  delivered a fixed-reply prompt and `run wait` returned the exact reply.
+  Native screen and history both confirmed the input and the reply;
+  delivery was `native_recorded`, attribution `correlated`, zero tool
+  calls. The completion evidence was `inferred`, not a native termination
+  signal, so this proves the create-and-inject chain, not unattended
+  startup or business-task acceptance.
+- **Codex CLI 0.137.0: launch fixed this round.** The plan's fixed
+  `--no-daemon` was rejected by the installed binary (`unexpected
+  argument`; `session create` had returned `created` while the pane went
+  `dead`, so a creation receipt is not launch liveness). The flag was
+  removed from fresh and resume plans; a bounded re-host in a disposable
+  workspace then launched the TUI, which stayed alive at Codex's own
+  first-launch directory-trust dialog ("Do you trust the contents of this
+  directory?", default "Yes, continue") with no model call, and closed
+  cleanly through the public close path with no leftover pane records.
+  Two follow-ups remain: the hosted-TUI readiness marker `"OpenAI Codex"`
+  (used by `tests/test_engine_native.py`, an engine-owner file) no longer
+  matches 0.137.0's welcome text ("Welcome to Codex, OpenAI's command-line
+  coding agent"), and the first-run trust dialog still needs a one-time
+  confirmation (the library refuses to answer trust dialogs).
+- **OpenCode 1.19.5, Cursor agent 2026.09.23, Pi 1.5.2: offline flag
+  re-verification plus one bounded opencode model-flag re-host.**
+  `--help` on each installed CLI confirms every flag the profiles use:
+  opencode `-s <exact-id>`, `--auto`, and `-m/--model` (plus the
+  `OPENCODE_CONFIG_CONTENT` env channel — the pre-1.19 `--standalone` flag
+  is gone and was removed from plans; `debug config` resolves the env
+  document and `mcp list` attempts its servers on 1.19.5), cursor
+  `--model`, `--resume`, `--force`, `--trust`, and pi `--model`,
+  `--session <path>`, `--approve`. The model flag additionally got a
+  bounded hosted check: a fresh `build_create_plan(..., model=...)` under
+  a disposable root launched the TUI with the selected model showing in
+  its model selector, stayed alive with no rejection text, and closed
+  through the public close path with no leftover pane; a default plan
+  without a model launched unchanged. No model calls were made; the
+  model's actual effect on a turn and live MCP delivery on 1.19.5 are
+  not re-verified here.
+- Both verification sessions were released through the public close entry
+  and the owned-terminal list verified empty; native history was not
+  deleted and no existing user session was touched. These are
+  machine-version-scoped results: they do not replace the historical
+  release acceptance above or extend to other runtimes.

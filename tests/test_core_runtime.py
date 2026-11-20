@@ -58,7 +58,7 @@ def test_create_plans_exact_argv_auto_approve(tmp_path):
     assert "--dangerously-skip-permissions" in claude
 
     codex = build_create_plan("codex", cwd, auto_approve=True).argv
-    assert codex[:3] == ("codex", "--no-daemon", "--dangerously-bypass-approvals-and-sandbox")
+    assert codex[:2] == ("codex", "--dangerously-bypass-approvals-and-sandbox")
 
     opencode = build_create_plan("opencode", cwd, auto_approve=True).argv
     assert opencode == ("opencode", "--auto")
@@ -91,7 +91,6 @@ def test_resume_plans_exact_positions(tmp_path):
     assert build_resume_plan("codex", {"id": "abc", "cwd": str(tmp_path)}, auto_approve=True).argv == (
         "codex",
         "resume",
-        "--no-daemon",
         "--dangerously-bypass-approvals-and-sandbox",
         "abc",
     )
@@ -147,12 +146,17 @@ def test_model_selection_behavior(tmp_path):
     assert argv[-2:] == ("--model", "provider/model")
     argv = build_create_plan("antigravity", cwd, model="gemini-2.5-pro").argv
     assert argv[-2:] == ("--model", "gemini-2.5-pro")
-    # OpenCode has no verified per-launch model flag: fail, never fall back.
+    # opencode 1.19.5 accepts -m/--model on the hosted root command.
+    argv = build_create_plan("opencode", cwd, model="provider/model").argv
+    assert argv[-2:] == ("--model", "provider/model")
+    # A profile without a verified model flag still fails, never falls back.
+    registry = default_registry()
+    registry.register(RuntimeProfile(id="acme", display_name="Acme", executable="acme-agent"))
     with pytest.raises(ControlError) as exc:
-        build_create_plan("opencode", cwd, model="anything")
+        build_create_plan("acme", cwd, model="anything", registry=registry)
     assert exc.value.code == "model_selection_unsupported"
     # Omitted model inherits runtime defaults: no flag anywhere.
-    for runtime in ("claude", "codex", "cursor", "pi", "antigravity"):
+    for runtime in ("claude", "codex", "opencode", "cursor", "pi", "antigravity"):
         assert "--model" not in build_create_plan(runtime, cwd).argv
 
 
@@ -267,13 +271,16 @@ def test_mcp_channel_rendering(tmp_path):
     assert "SECRET-1" not in repr(codex)
 
     oc = build_create_plan("opencode", cwd, auto_approve=True, mcp_servers=[server])
-    assert oc.argv == ("opencode", "--standalone", "--auto")
+    # MCP travels entirely in plan.env; opencode 1.19.5 removed the
+    # pre-1.19 --standalone flag, so the argv carries no extra token.
+    assert oc.argv == ("opencode", "--auto")
+    assert "--standalone" not in " ".join(oc.argv)
     content = json.loads(oc.to_dict(include_env=True)["env"]["OPENCODE_CONFIG_CONTENT"])
     assert content["mcp"]["servers"]["db"]["command"] == ["/bin/echo", "--x"]
     assert content["mcp"]["servers"]["db"]["environment"] == {"TOKEN": "SECRET-1"}
     assert "SECRET-1" not in json.dumps(oc.to_dict())
     assert oc.to_dict()["env_keys"] == ["OPENCODE_CONFIG_CONTENT"]
-    # No-MCP preserves exact legacy argv (no standalone); resume matches.
+    # No-MCP argv is identical; resume matches (no removed flags anywhere).
     assert build_create_plan("opencode", cwd, auto_approve=True).argv == ("opencode", "--auto")
     assert build_resume_plan("opencode", {"id": "abc", "cwd": cwd}, auto_approve=True).argv == (
         "opencode",
@@ -283,7 +290,6 @@ def test_mcp_channel_rendering(tmp_path):
     )
     assert build_resume_plan("opencode", {"id": "abc", "cwd": cwd}, auto_approve=True, mcp_servers=[server]).argv == (
         "opencode",
-        "--standalone",
         "--auto",
         "-s",
         "abc",

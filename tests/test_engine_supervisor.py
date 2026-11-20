@@ -36,6 +36,7 @@ def make_run(
     on_busy="queue",
     mode="submit",
     history_path="fake-history",
+    queue_timeout=60,
 ):
     spec = {
         "mode": mode,
@@ -46,7 +47,7 @@ def make_run(
         "prompt": prompt,
         "model": None,
         "on_busy": on_busy,
-        "queue_timeout": 60,
+        "queue_timeout": queue_timeout,
     }
     data, created = store.create(
         "tester",
@@ -173,6 +174,78 @@ def test_generation_reset_becomes_unknown(tmp_path):
     record = run_to_end(store, run_id, hooks)
     assert record["execution"] == "unknown"
     assert record["error"]["code"] == "history_reset"
+
+
+def test_cold_reader_materialization_settles_completed(tmp_path):
+    """Regression: a cold-opened reader's first poll is a materialization.
+
+    SessKit readers opened without a cursor always report ``reset=True`` with
+    generation "1" on their first poll: that is the initial materialization
+    of the bound history, not a replacement. A real run bound by marker
+    evidence used to die with history_reset 60ms after input; through the
+    real reader it must correlate the marker and settle completed.
+    """
+    pytest.importorskip("sesskit", reason="SessKit is required for real reader observation")
+    from agent_session_control.history import HistoryObserver
+
+    store = fakes.MemoryStore(str(tmp_path))
+    spec = {
+        "mode": "submit",
+        "runtime": "claude",
+        "cwd": "/tmp",
+        "session_ref": "ses_test",
+        "history_path": "",
+        "prompt": "Reply with ACK and nothing else.",
+        "model": None,
+        "on_busy": "queue",
+        "queue_timeout": 60,
+    }
+    data, created = store.create(
+        "tester",
+        "k-cold",
+        spec,
+        {"delivery": "accepted", "execution": "accepted", "session_ref": "ses_test", "runtime": "claude"},
+    )
+    assert created
+    run_id = data["run_id"]
+    fixture = tmp_path / "native-session.jsonl"
+    fakes.write_claude_history(fixture, run_id)
+
+    hooks, backend, _ = fakes.script_hooks(
+        str(tmp_path), session_ref="ses_test", runtime="claude", resolve_path=str(fixture)
+    )
+    observer = HistoryObserver(runtime="claude")
+    nodes: dict = {}
+
+    def open_observation(binding):
+        handle = f"obs-{len(nodes)}"
+        nodes[handle] = {
+            "events": {},
+            "reader": observer.open_reader({"path": str(fixture), "source": "claude"}),
+        }
+        return handle
+
+    def poll_observation(handle_id, poll_run_id, base_seq):
+        node = nodes[handle_id]
+        observation, reset = observer.observe(node["reader"], poll_run_id, base_seq, node["events"], "claude")
+        obs = observation if isinstance(observation, dict) else observation.as_dict()
+        return (obs, reset, "ready")
+
+    def close_observation(handle_id):
+        node = nodes.pop(handle_id, None)
+        close = getattr((node or {}).get("reader"), "close", None)
+        if callable(close):
+            close()
+
+    hooks.open_observation = open_observation
+    hooks.poll_observation = poll_observation
+    hooks.close_observation = close_observation
+
+    record = run_to_end(store, run_id, hooks)
+    assert record["execution"] == "completed"
+    assert record["delivery"] == "native_recorded"
+    assert record["result"]["final_response"] == "ACK"
+    assert len(backend.submitted) == 1, "the brief must reach the backend exactly once"
 
 
 def test_mixed_attribution_never_becomes_exclusive_result(tmp_path):
@@ -574,3 +647,155 @@ def test_wait_for_target_processes_queued_interrupt(tmp_path):
     assert record["delivery"] == "rejected"
     assert backend.submitted == []
     assert backend.interrupts == []
+
+
+def test_admit_accepts_late_binding_history_path(tmp_path):
+    """A spec accepted before native binding adopts the learned path.
+
+    The first turn is accepted while the session has no native history yet;
+    by the time a queued second turn is admitted the registry has learned the
+    exact path. That is not a target change.
+    """
+    store = fakes.MemoryStore(str(tmp_path))
+    run_id, _ = make_run(store, history_path=None)
+    hooks, _, _ = fakes.script_hooks(str(tmp_path), resolve_path="learned-history")
+    runner = SupervisorRunner(store, run_id, hooks)
+    runner.admit()
+    record = store.get(run_id)
+    assert record["execution"] == "accepted", "late binding must admit, not reject"
+    assert record.get("error") is None
+    assert runner.binding["history_path"] == "learned-history"
+
+
+def test_late_bound_second_run_settles_end_to_end(tmp_path):
+    """The full pipeline works when binding is learned between accept and admit."""
+    store = fakes.MemoryStore(str(tmp_path))
+    run_id, _ = make_run(store, history_path=None)
+    hooks, backend, _ = fakes.script_hooks(
+        str(tmp_path),
+        observations=[fakes.script_observation(run_id, outcome="completed")],
+        resolve_path="learned-history",
+    )
+    record = run_to_end(store, run_id, hooks)
+    assert record["execution"] == "completed"
+    assert record["delivery"] == "native_recorded"
+    assert len(backend.submitted) == 1
+
+
+def test_admit_continues_when_session_still_unbound(tmp_path):
+    """Neither spec nor session knows the path yet: admission continues."""
+    store = fakes.MemoryStore(str(tmp_path))
+    run_id, _ = make_run(store, history_path=None)
+    hooks, _, _ = fakes.script_hooks(str(tmp_path), resolve_path=None)
+    runner = SupervisorRunner(store, run_id, hooks)
+    runner.admit()
+    record = store.get(run_id)
+    assert record["execution"] == "accepted"
+    assert record.get("error") is None
+    assert runner.binding["history_path"] is None
+
+
+def test_admit_rejects_when_submitted_history_path_changed(tmp_path):
+    """A spec that carried a path still rejects a different current path."""
+    store = fakes.MemoryStore(str(tmp_path))
+    run_id, _ = make_run(store, history_path="fake-history")
+    hooks, backend, _ = fakes.script_hooks(str(tmp_path), resolve_path="another-history")
+    runner = SupervisorRunner(store, run_id, hooks)
+    runner.admit()
+    record = store.get(run_id)
+    assert record["delivery"] == "rejected"
+    assert record["execution"] == "failed"
+    assert record["error"]["code"] == "target_changed"
+    assert backend.submitted == []
+
+
+def test_admit_rejects_when_cwd_changed_even_without_history_path(tmp_path):
+    """cwd comparison stays strict even when no history path was submitted."""
+    store = fakes.MemoryStore(str(tmp_path))
+    run_id, _ = make_run(store, history_path=None)
+    hooks, _, _ = fakes.script_hooks(str(tmp_path), resolve_path="learned-history")
+    original_resolve = hooks.resolve_target
+    hooks.resolve_target = lambda ref: {**original_resolve(ref), "cwd": "/elsewhere"}
+    runner = SupervisorRunner(store, run_id, hooks)
+    runner.admit()
+    record = store.get(run_id)
+    assert record["delivery"] == "rejected"
+    assert record["execution"] == "failed"
+    assert record["error"]["code"] == "target_changed"
+
+
+def _track_updates(store, transitions):
+    original_update = store.update
+
+    def tracking_update(run_id, changes, **kwargs):
+        transitions.append(dict(changes))
+        return original_update(run_id, changes, **kwargs)
+
+    store.update = tracking_update
+
+
+def test_busy_target_reject_mode_rejects_immediately_without_queueing(tmp_path):
+    """on_busy=reject with the target lock held: no queueing, instant target_busy."""
+    import threading
+
+    store = fakes.MemoryStore(str(tmp_path))
+    run_id, _ = make_run(store, on_busy="reject")
+    transitions: list[dict] = []
+    _track_updates(store, transitions)
+    outcomes = {}
+
+    def supervise():
+        outcomes["rc"] = run_supervisor(
+            store,
+            run_id,
+            fakes.script_hooks(str(tmp_path), observations=["unrecorded"])[0],
+            settle_quiet=0,
+            history_wait=10,
+        )
+
+    with file_lock(str(tmp_path), "target:ses_test") as owned:
+        assert owned
+        worker = threading.Thread(target=supervise)
+        worker.start()
+        worker.join(timeout=30)
+    assert not worker.is_alive(), "reject mode must settle without waiting on the busy target"
+    assert outcomes["rc"] == 0
+    record = store.get(run_id)
+    assert record["delivery"] == "rejected"
+    assert record["execution"] == "failed"
+    assert record["error"]["code"] == "target_busy"
+    assert not any(t.get("execution") == "queued" for t in transitions), "reject mode must never queue"
+    assert "queue_reason" not in record
+
+
+def test_busy_target_queue_mode_still_queues_and_expires(tmp_path):
+    """on_busy=queue with the target lock held still queues, then expires."""
+    import threading
+
+    store = fakes.MemoryStore(str(tmp_path))
+    run_id, _ = make_run(store, on_busy="queue", queue_timeout=1)
+    transitions: list[dict] = []
+    _track_updates(store, transitions)
+    outcomes = {}
+
+    def supervise():
+        outcomes["rc"] = run_supervisor(
+            store,
+            run_id,
+            fakes.script_hooks(str(tmp_path), observations=["unrecorded"])[0],
+            settle_quiet=0,
+            history_wait=10,
+        )
+
+    with file_lock(str(tmp_path), "target:ses_test") as owned:
+        assert owned
+        worker = threading.Thread(target=supervise)
+        worker.start()
+        worker.join(timeout=30)
+    assert not worker.is_alive()
+    assert outcomes["rc"] == 0
+    record = store.get(run_id)
+    assert record["delivery"] == "rejected"
+    assert record["execution"] == "failed"
+    assert record["error"]["code"] == "queue_expired"
+    assert any(t.get("execution") == "queued" for t in transitions), "queue mode must still queue"

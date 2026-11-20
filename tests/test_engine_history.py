@@ -14,6 +14,9 @@ import pytest
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(_HERE, "..", "src"))
+sys.path.insert(0, os.path.join(_HERE, "fixtures", "engine"))
+
+import fakes  # noqa: E402  # pyrefly: ignore[missing-import]
 
 from agent_session_control import history as H  # noqa: E402
 
@@ -172,6 +175,91 @@ def test_history_observer_reports_missing_history():
     with pytest.raises(H.HistoryError) as excinfo:
         observer.load_snapshot({"path": "/nonexistent/history.jsonl", "source": "echo"})
     assert excinfo.value.code == "history_unavailable"
+
+
+class _Poll:
+    """Minimal reader/poll fake for observer-protocol tests."""
+
+    def __init__(self, *, reset=False, events=()):
+        self.reset = reset
+        self.events = tuple(events)
+        self.state = "available"
+        self.outcome = None
+        self.cursor = "c"
+        self.generation = "g2"
+
+    def poll(self):
+        return _Poll(reset=self.reset, events=self.events)
+
+
+def test_observe_reports_reset_even_before_events_accumulated():
+    """A generation reset must surface even with no accumulated events yet.
+
+    The baseline seq belongs to the replaced (pre-reset) history; swallowing
+    the reset while nothing was accumulated keeps that stale baseline in
+    effect and silently rebinds the run instead of failing unknown.
+    """
+    pytest.importorskip("sesskit", reason="SessKit not importable in this env")
+    observer = H.HistoryObserver(runtime="echo")
+    observation, reset = observer.observe(_Poll(reset=True), "run_abc123", 42, {}, "echo")
+    assert reset is True, "a reset with no accumulated events must still be reported"
+    assert observation.recorded is False
+    assert observation.generation == "g2"
+
+
+def test_observe_reports_reset_with_accumulated_events():
+    pytest.importorskip("sesskit", reason="SessKit not importable in this env")
+    observer = H.HistoryObserver(runtime="echo")
+    events = {1: _user(1, "earlier observed input")}
+    observation, reset = observer.observe(_Poll(reset=True), "run_abc123", 42, events, "echo")
+    assert reset is True
+    assert observation.recorded is True, "the voided attribution still reports what was seen"
+    assert observation.message_ids == []
+
+
+def test_observe_consumes_cold_reader_materialization(tmp_path):
+    """Regression: a cursor-less reader's first poll is a materialization.
+
+    Every SessKit runtime reports ``reset=True`` with generation "1" on the
+    first poll of a reader opened without a cursor: that is the initial
+    materialization of the bound file, not a replacement. Consuming it used
+    to be fatal (history_reset 60ms after input) and voided completed runs.
+    """
+    pytest.importorskip("sesskit", reason="SessKit not importable in this env")
+    observer = H.HistoryObserver(runtime="claude")
+    run = "run_abc123def4567890abc123def4567890"
+    fixture = tmp_path / "session.jsonl"
+    fakes.write_claude_history(fixture, run)
+    reader = observer.open_reader({"path": str(fixture), "source": "claude"})
+    events: dict = {}
+    observation, reset = observer.observe(reader, run, -1, events, "claude")
+    assert reset is False, "the first poll materializes the bound file; it is not a replacement"
+    assert observation.recorded is True
+    assert observation.message_ids == ["initial"]
+    assert observation.outcome == "completed"
+    # Steady state: the materialized file polls clean and stays correlated.
+    observation, reset = observer.observe(reader, run, -1, events, "claude")
+    assert reset is False
+    assert observation.recorded is True
+    assert observation.outcome == "completed"
+
+
+def test_observe_reports_reset_after_real_replacement(tmp_path):
+    """A genuine replacement after establishment still reports reset."""
+    pytest.importorskip("sesskit", reason="SessKit not importable in this env")
+    observer = H.HistoryObserver(runtime="claude")
+    run = "run_abc123def4567890abc123def4567890"
+    fixture = tmp_path / "session.jsonl"
+    fakes.write_claude_history(fixture, run)
+    reader = observer.open_reader({"path": str(fixture), "source": "claude"})
+    events: dict = {}
+    observation, reset = observer.observe(reader, run, -1, events, "claude")
+    assert reset is False and observation.recorded is True
+    # The bound file is rewritten with a different lineage at the same path.
+    fakes.write_claude_history(fixture, "run_ffffffffffffffffffffffffffffffff", reply="OTHER")
+    observation, reset = observer.observe(reader, run, -1, events, "claude")
+    assert reset is True, "a replaced history after establishment must surface the reset"
+    assert observation.recorded is True, "the voided attribution still reports what was seen"
 
 
 def test_real_derive_turns_with_synthetic_models():

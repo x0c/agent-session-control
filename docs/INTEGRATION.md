@@ -136,8 +136,8 @@ others.
 | Pure launch/resume plans | yes | yes | yes | yes | yes | yes |
 | Owned tmux hosting + liveness + close (no prompt) | yes | yes | yes | yes | yes | yes |
 | Native turn settlement (login/quota-gated, spends quota) | gated | gated | gated | gated | gated | gated |
-| Per-session MCP launch channel | headless-verified | headless-verified | headless-verified | refused (`unsupported`) | refused (`unsupported`) | refused (`unsupported`) |
-| Hosted TUI MCP delivery | pending host run | pending host run | launcher-owned only | refused (`unsupported`) | refused (`unsupported`) | refused (`unsupported`) |
+| Per-session MCP launch channel | headless-verified | headless-verified | config-verified (1.19.5); live re-verification pending | refused (`unsupported`) | refused (`unsupported`) | refused (`unsupported`) |
+| Hosted TUI MCP delivery | pending host run | pending host run | pending host run | refused (`unsupported`) | refused (`unsupported`) | refused (`unsupported`) |
 | Native history observation (needs `history` extra) | via SessKit | via SessKit | via SessKit | via SessKit | via SessKit | via SessKit |
 | ACP serving over this runtime | yes | yes | yes | SDK/CLI only | SDK/CLI only | SDK/CLI only (`agy acp` native) |
 
@@ -157,9 +157,7 @@ plan = build_create_plan("claude", "/path/to/project")
 # plan.argv is an immutable tuple; execute it with your own supervision, e.g.
 # subprocess.Popen(plan.argv, cwd=plan.cwd, env={**os.environ, **plan.env}).
 
-resume = build_resume_plan(
-    "codex", {"id": "<exact-native-id>", "cwd": "/path/to/project"}
-)
+resume = build_resume_plan("codex", {"id": "<exact-native-id>", "cwd": "/path/to/project"})
 print(runtime_profile("cursor"))  # executable, aliases, interrupt keys, limitations
 ```
 
@@ -174,7 +172,7 @@ Rules consumers must keep:
   cursor/antigravity, `path` for pi). Missing identity raises instead of
   starting a blank replacement conversation.
 - Unsupported options raise `ControlError` before launch: unknown runtimes,
-  `--model` on OpenCode, preassigned native ids where no flag exists, and
+  preassigned native ids where no flag exists, and
   `mcp_servers` on cursor/pi/antigravity (per-launch MCP is refused as
   `unsupported` there; claude/codex/opencode use the verified launch-only
   channels below). MCP configuration is per-session/process and private:
@@ -191,9 +189,11 @@ Rules consumers must keep:
 # Pass auto_approve=True only when the host's explicit policy allows it
 # (default False adds no approval relaxation).
 plan = build_create_plan(
-    "codex", "/path/to/project",
-    mcp_servers=[{"name": "docs", "command": "/usr/local/bin/docs-mcp",
-                  "args": ["--root", "/docs"], "env": {"API_KEY": "..."}}],
+    "codex",
+    "/path/to/project",
+    mcp_servers=[
+        {"name": "docs", "command": "/usr/local/bin/docs-mcp", "args": ["--root", "/docs"], "env": {"API_KEY": "..."}}
+    ],
 )
 # Redacted projection carries no secret values and secret-free argv:
 print(plan.to_dict())
@@ -212,7 +212,7 @@ written to global or project config:
 |---|---|---|---|---|
 | claude | `--mcp-config '<.mcp.json>'` + `--strict-mcp-config` on argv | interactive `build_create_plan` argv | headless `claude -p` called the fixture | flags shared with hosted argv; TUI delivery pending host run |
 | codex | `-c mcp_servers.<name>.command/args/env_vars` on argv, secrets in process env | interactive `build_create_plan` argv | headless `codex exec` received the secret via forwarding | overrides shared with hosted argv; TUI delivery pending host run |
-| opencode | `OPENCODE_CONFIG_CONTENT` in private process env | `plan.env` | headless `--standalone run` called the fixture | needs launcher-owned server; ambient daemon ignores env |
+| opencode | `OPENCODE_CONFIG_CONTENT` in private process env | `plan.env` | headless `run` called the fixture (pre-1.19 CLI); 1.19.5: `debug config`/`mcp list` resolve the document | live delivery pending re-verification on 1.19.5 |
 | cursor, pi | none (persistent files only) | — | — | refused as `unsupported` |
 
 Reference behavior established 2026-10-30 (installed CLIs plus binary
@@ -222,11 +222,11 @@ otherwise swallow following positionals, and `mcp list` ignores session
 flags entirely. Codex `-c` values are TOML-parsed dotted overrides
 (`codex mcp get <name> -c ...` shows the merge; global `config.toml`
 carries no fixture). OpenCode consumes `OPENCODE_CONFIG_CONTENT` as a
-virtual config document (confirmed in the v2.2.2 binary), with servers
-under `mcp.servers.<name>` (shape confirmed via `mcp add`); it takes
-effect only with a launcher-owned server — the ambient background service
-ignores it, so hosted TUI use needs host cooperation (private server or
-project file).
+virtual config document with servers under `mcp.servers.<name>`; on
+opencode 1.19.5 `debug config` resolves the document and `mcp list`
+attempts its servers with no extra flag, while the pre-1.19
+`--standalone` private-server flag no longer exists and is never passed
+(live model-backed delivery has not been re-verified on 1.19.5).
 
 Secrets: server `env` values never travel on argv. Claude argv carries
 `${NAME}` references expanded from the child process environment (official
@@ -252,8 +252,8 @@ from agent_session_control import RunStore
 
 store = RunStore()  # ~/.config/agent-session-control/control/runs.sqlite3
 record, created = store.create(
-    "local-user",                       # actor
-    "request-key-1",                    # immutable idempotency key
+    "local-user",  # actor
+    "request-key-1",  # immutable idempotency key
     {"target": "claude:<id>", "text": "..."},  # immutable spec
     {"execution": "queued", "delivery": "accepted"},
 )
@@ -294,6 +294,7 @@ import tempfile
 from pathlib import Path
 from agent_session_control.controller import LocalController
 
+
 async def main() -> None:
     # Selected temp project + isolated control root: never a fixed /tmp path.
     with tempfile.TemporaryDirectory(prefix="asc-sdk-") as scratch:
@@ -316,6 +317,7 @@ async def main() -> None:
             # Public-API cleanup only: releases the pane; keeps history.
             if handle is not None:
                 await controller.close_session(handle.id)
+
 
 asyncio.run(main())
 ```
@@ -340,7 +342,7 @@ python -m agent_session_control version --json
 
 python -m agent_session_control plan create --runtime codex --cwd /tmp/demo-proj --json
 # {"ok": true, "data": {"dry_run": true, "status": "planned",
-#   "launch": {"argv": ["codex", "--no-daemon"], "cwd": "/tmp/demo-proj", "env_keys": []}}, ...}
+#   "launch": {"argv": ["codex"], "cwd": "/tmp/demo-proj", "env_keys": []}}, ...}
 
 python -m agent_session_control session create --runtime codex --cwd /tmp/demo-proj \
   --dry-run --json --root /tmp/demo-control   # planned only; creates no state

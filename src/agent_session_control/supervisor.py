@@ -319,7 +319,12 @@ class SupervisorRunner:
         prepare = _need(self.hooks.prepare, "prepare")
         submit = _need(self.hooks.submit, "submit")
         verify = _need(self.hooks.verify, "verify")
-        self.update(execution="starting")
+        try:
+            self.update(execution="starting")
+        except Exception as exc:
+            if getattr(exc, "code", None) == "terminal_run":
+                return -1
+            raise
         session_ref = self.binding.get("session_ref") or self.record()["spec"]["session_ref"]
         deadline = time.monotonic() + DISPATCH_TIMEOUT
         try:
@@ -607,6 +612,29 @@ class SupervisorRunner:
             }:
                 self.store.message_state(message_id, "native_recorded")
 
+    def _has_unrecorded_followup(self, observation: dict) -> bool:
+        try:
+            messages = self.store.messages(self.run_id)
+        except Exception:
+            return False
+        seen = {str(m) for m in (observation.get("messages") or [])}
+        for message in messages:
+            action = message.get("action")
+            state = message.get("state")
+            ident = message.get("message_id") or message.get("id")
+            if action == "steer" and state in {
+                "queued",
+                "dispatching",
+                "unknown",
+                "input_submitted",
+                "native_recorded",
+            }:
+                if ident not in seen:
+                    return True
+            elif action == "answer" and state in {"queued", "dispatching", "unknown"}:
+                return True
+        return False
+
     def observation_changes(self, record: dict, observation: dict, dead: bool, quiet: float) -> dict:
         from agent_session_control.history import ActivityObservation, build_result
 
@@ -619,11 +647,13 @@ class SupervisorRunner:
             "error": None,
         }
         outcome = observation.get("outcome")
-        phase = "idle" if dead else self.hooks.phase(self._session_ref())
-        waiting = observation.get("pending_interaction") or phase == "waiting" or outcome == "awaiting_input"
+        current_turn = observation.get("current_turn", True)
+        turn_superseded = (current_turn is False) and not self._has_unrecorded_followup(observation)
+        phase = "idle" if (dead or turn_superseded) else self.hooks.phase(self._session_ref())
+        waiting = bool(observation.get("pending_interaction") or phase == "waiting" or outcome == "awaiting_input")
         if observation.get("attribution") == "mixed":
             # Foreign input inside the bound range: never an exclusive result.
-            if outcome in {"completed", "failed", "interrupted"} and not waiting:
+            if (outcome in {"completed", "failed", "interrupted"} or turn_superseded or dead) and not waiting:
                 changes.update(
                     execution="unknown",
                     error={
@@ -659,6 +689,7 @@ class SupervisorRunner:
             settled = (
                 observation.get("outcome_evidence") == "native"
                 or dead
+                or turn_superseded
                 or (
                     quiet >= self.settle_quiet
                     and (phase not in {"working", "waiting"} or final == "interrupted")
@@ -676,6 +707,17 @@ class SupervisorRunner:
                 if observation.get("stop_reason"):
                     changes["stop_reason"] = observation["stop_reason"]
                 return changes
+        if turn_superseded and not waiting:
+            changes.update(
+                execution="unknown",
+                error={
+                    "code": "turn_superseded",
+                    "message": (
+                        "a later user message started a new turn before this run's turn produced a settled outcome"
+                    ),
+                },
+            )
+            return changes
         if dead:
             changes.update(
                 execution="unknown",
@@ -954,6 +996,16 @@ def _wait_for_target(store: Any, run_id: str, target: str, hooks: SupervisorHook
             return 1
         if current.get("execution") in SETTLED_EXECUTION:
             return 0
+        if current.get("delivery") == "accepted":
+            try:
+                SupervisorRunner(store, run_id, hooks, **kwargs).process_messages(None)
+            except Exception:
+                pass
+            try:
+                if _get_private(store, run_id).get("execution") in SETTLED_EXECUTION:
+                    return 0
+            except Exception:
+                pass
         if _expired(current.get("spec", {}), current):
             try:
                 # Queue expiry never dispatched: rejected intent, failed work.

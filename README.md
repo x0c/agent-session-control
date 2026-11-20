@@ -9,16 +9,16 @@ This is a **Python library + JSON CLI + ACP adapter** — not a TUI, not a sessi
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/x0c/agent-session-control/actions/workflows/ci.yml/badge.svg)](https://github.com/x0c/agent-session-control/actions/workflows/ci.yml)
 
-Status: 0.1.3 (see [docs/INTEGRATION.md](docs/INTEGRATION.md) and [docs/CONTRACT.md](docs/CONTRACT.md)). Per-runtime limits are listed below.
+Status: 0.1.4 (see [docs/INTEGRATION.md](docs/INTEGRATION.md) and [docs/CONTRACT.md](docs/CONTRACT.md)). Per-runtime limits are listed below.
 
 ## Install
 
-Install the fixed version from [PyPI](https://pypi.org/project/agent-session-control/0.1.3/) in your project's virtual environment.
+Install the fixed version from [PyPI](https://pypi.org/project/agent-session-control/0.1.4/) in your project's virtual environment.
 
 Requires **Python 3.10–3.14 (3.12 recommended)**. Default tmux backend runs on **macOS and Linux**; Windows/WSL are not supported. A Homebrew `python3` may be 3.15, which the optional `agent-client-protocol` SDK excludes — use a 3.10–3.14 interpreter for the `acp` extra.
 
 ```bash
-VERSION=0.1.3
+VERSION=0.1.4
 SESSKIT=https://github.com/x0c/sesskit/releases/download/v0.3.2/sesskit-0.3.2-py3-none-any.whl
 
 # Core only: plans, store, correlation, JSON CLI (stdlib only).
@@ -37,7 +37,7 @@ python -c "import agent_session_control; print(agent_session_control.__version__
 
 Need a virtual environment first? Run `python3 -m venv .venv && . .venv/bin/activate`.
 
-The same [wheel and source archive](https://github.com/x0c/agent-session-control/releases/tag/v0.1.3) are also available on GitHub with SHA256 checksums.
+The same [wheel and source archive](https://github.com/x0c/agent-session-control/releases/tag/v0.1.4) are also available on GitHub with SHA256 checksums.
 
 ## What works today (tested)
 
@@ -150,7 +150,7 @@ JSON CLI (machine envelope on stdout; ACP owns its own stdout):
 
 ```sh
 python -m agent_session_control version --json
-# {"ok": true, "data": {"package": "agent-session-control", "version": "0.1.3", ...}, "error": null, "meta": {...}}
+# {"ok": true, "data": {"package": "agent-session-control", "version": "0.1.4", ...}, "error": null, "meta": {...}}
 
 python -m agent_session_control plan create --runtime codex --cwd /tmp/demo-proj --json
 # {"ok": true, "data": {"dry_run": true, "status": "planned",
@@ -194,12 +194,12 @@ executable presence only — never login, quota, or model entitlement.
 Unavailable login/quota surface as explicit limits, not passes.
 
 Companion Skill: agents driving this library should install
-[`agent-session-control`](https://github.com/x0c/agent-session-control/blob/v0.1.3/skills/agent-session-control/SKILL.md)
-([`references/mcp.md`](https://github.com/x0c/agent-session-control/blob/v0.1.3/skills/agent-session-control/references/mcp.md)),
+[`agent-session-control`](https://github.com/x0c/agent-session-control/blob/v0.1.4/skills/agent-session-control/SKILL.md)
+([`references/mcp.md`](https://github.com/x0c/agent-session-control/blob/v0.1.4/skills/agent-session-control/references/mcp.md)),
 shipped in the wheel at `agent_session_control/skills/agent-session-control`:
 
 ```sh
-npx skills add x0c/agent-session-control@v0.1.3 --skill agent-session-control
+npx skills add x0c/agent-session-control@v0.1.4 --skill agent-session-control
 ```
 
 The Skill teaches the existing JSON CLI lifecycle (plan/host/observe/release);

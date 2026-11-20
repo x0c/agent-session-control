@@ -471,3 +471,106 @@ def test_on_busy_reject_fails_fast_behind_target_lock(tmp_path):
     assert record["execution"] == "failed"
     assert record["error"]["code"] == "target_busy"
     assert backend.submitted == []
+
+
+def test_superseded_inferred_turn_settles_while_session_working_and_non_reply_tail(tmp_path):
+    store = fakes.MemoryStore(str(tmp_path))
+    run_id, _ = make_run(store)
+    obs = fakes.script_observation(run_id, outcome="completed", evidence="inferred")
+    obs["current_turn"] = False
+    obs["events"].append({"native_seq": 3, "type": "tool_result", "text": "tool finished"})
+    hooks, backend, _ = fakes.script_hooks(str(tmp_path), observations=[obs])
+    ticks = {"n": 0}
+
+    def changing_screen(_ref):
+        ticks["n"] += 1
+        return f"frame-{ticks['n']}"
+
+    hooks.phase = lambda _ref: "working"
+    hooks.screen_hash = changing_screen
+    record = run_to_end(store, run_id, hooks, settle_quiet=60.0)
+    assert record["execution"] == "completed"
+    assert record["finality"] == "inferred"
+    assert len(backend.submitted) == 1
+
+
+def test_superseded_mixed_attribution_in_progress_settles_without_wedging(tmp_path):
+    store = fakes.MemoryStore(str(tmp_path))
+    run_id, _ = make_run(store)
+    obs = fakes.script_observation(run_id, outcome="in_progress", evidence="unknown", attribution="mixed")
+    obs["current_turn"] = False
+    hooks, _, _ = fakes.script_hooks(str(tmp_path), observations=[obs])
+    hooks.phase = lambda _ref: "waiting"
+    record = run_to_end(store, run_id, hooks, settle_quiet=60.0)
+    assert record["execution"] == "unknown"
+    assert record["error"]["code"] == "mixed_attribution"
+
+
+def test_superseded_unknown_outcome_settles_as_turn_superseded(tmp_path):
+    store = fakes.MemoryStore(str(tmp_path))
+    run_id, _ = make_run(store)
+    obs = fakes.script_observation(run_id, outcome="unknown", evidence="unknown", attribution="correlated")
+    obs["current_turn"] = False
+    hooks, _, _ = fakes.script_hooks(str(tmp_path), observations=[obs])
+    record = run_to_end(store, run_id, hooks, settle_quiet=60.0)
+    assert record["execution"] == "unknown"
+    assert record["error"]["code"] == "turn_superseded"
+
+
+def test_superseded_turn_waits_for_unrecorded_own_steer(tmp_path):
+    store = fakes.MemoryStore(str(tmp_path))
+    run_id, _ = make_run(store)
+    msg, _ = store.enqueue(
+        run_id, "tester", "m-steer", {"action": "steer", "prompt": "keep going"}, store.get(run_id)["version"]
+    )
+    store.message_state(msg["message_id"], "input_submitted")
+    first = fakes.script_observation(run_id, message_ids=("initial",), outcome="completed", evidence="inferred")
+    first["current_turn"] = False
+    second = fakes.script_observation(
+        run_id, message_ids=("initial", msg["message_id"]), outcome="completed", evidence="native"
+    )
+    second["current_turn"] = True
+    hooks, _, history = fakes.script_hooks(str(tmp_path), observations=[first, second])
+    hooks.phase = lambda _ref: "working"
+    record = run_to_end(store, run_id, hooks, settle_quiet=60.0)
+    assert record["execution"] == "completed"
+    assert record["finality"] == "native"
+    assert history.calls >= 2
+
+
+def test_wait_for_target_processes_queued_interrupt(tmp_path):
+    store = fakes.MemoryStore(str(tmp_path))
+    spec = {
+        "mode": "submit",
+        "runtime": "echo",
+        "cwd": "/tmp",
+        "session_ref": "ses_locked",
+        "history_path": "fake-history",
+        "prompt": "cancel behind lock",
+        "model": None,
+        "on_busy": "queue",
+        "queue_timeout": 120,
+    }
+    data, _ = store.create(
+        "tester",
+        "wait-cancel",
+        spec,
+        {"delivery": "accepted", "execution": "queued", "session_ref": "ses_locked", "runtime": "echo"},
+    )
+    run_id = data["run_id"]
+    hooks, backend, _ = fakes.script_hooks(str(tmp_path), observations=["unrecorded"])
+    with file_lock(str(tmp_path), "target:ses_locked") as owned:
+        assert owned
+        # Enqueue interrupt right before run_supervisor waits behind target lock.
+        # Simulate arrival while already in _wait_for_target by enqueuing inside a
+        # custom sleep or running enqueue before _wait_for_target is called directly.
+        from agent_session_control.supervisor import _wait_for_target
+
+        store.enqueue(run_id, "tester", "m-cancel", {"action": "interrupt"}, store.get(run_id)["version"])
+        rc = _wait_for_target(store, run_id, "ses_locked", hooks, {"settle_quiet": 0, "history_wait": 10})
+    assert rc == 0
+    record = store.get(run_id)
+    assert record["execution"] == "interrupted"
+    assert record["delivery"] == "rejected"
+    assert backend.submitted == []
+    assert backend.interrupts == []

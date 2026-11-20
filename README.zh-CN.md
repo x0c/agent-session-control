@@ -9,16 +9,16 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/x0c/agent-session-control/actions/workflows/ci.yml/badge.svg)](https://github.com/x0c/agent-session-control/actions/workflows/ci.yml)
 
-状态：0.1.3（见 [docs/INTEGRATION.md](docs/INTEGRATION.md) 与 [docs/CONTRACT.md](docs/CONTRACT.md)）。各运行时限制见下文。
+状态：0.1.4（见 [docs/INTEGRATION.md](docs/INTEGRATION.md) 与 [docs/CONTRACT.md](docs/CONTRACT.md)）。各运行时限制见下文。
 
 ## 安装
 
-请在项目的虚拟环境中，从 [PyPI](https://pypi.org/project/agent-session-control/0.1.3/) 安装固定版本。
+请在项目的虚拟环境中，从 [PyPI](https://pypi.org/project/agent-session-control/0.1.4/) 安装固定版本。
 
 需要 **Python 3.10–3.14（推荐 3.12）**。默认 tmux 后端运行于 **macOS 与 Linux**；Windows/WSL 不受支持。Homebrew 的 `python3` 可能是官方 `agent-client-protocol` SDK 不支持的 3.15——安装 `acp` extra 时请使用 3.10–3.14 解释器。
 
 ```bash
-VERSION=0.1.3
+VERSION=0.1.4
 SESSKIT=https://github.com/x0c/sesskit/releases/download/v0.3.2/sesskit-0.3.2-py3-none-any.whl
 
 # 仅核心：启动计划、存储、证据关联、JSON 命令行（仅标准库）。
@@ -37,7 +37,7 @@ python -c "import agent_session_control; print(agent_session_control.__version__
 
 尚无虚拟环境时，先运行 `python3 -m venv .venv && . .venv/bin/activate`。
 
-GitHub 也提供相同的 [wheel 与源码归档](https://github.com/x0c/agent-session-control/releases/tag/v0.1.3)，并附有 SHA256 校验文件。
+GitHub 也提供相同的 [wheel 与源码归档](https://github.com/x0c/agent-session-control/releases/tag/v0.1.4)，并附有 SHA256 校验文件。
 
 ## 今日可用（已测试）
 
@@ -140,7 +140,7 @@ JSON 命令行（stdout 为机器信封；ACP 拥有自己独立的 stdout）：
 
 ```sh
 python -m agent_session_control version --json
-# {"ok": true, "data": {"package": "agent-session-control", "version": "0.1.3", ...}, "error": null, "meta": {...}}
+# {"ok": true, "data": {"package": "agent-session-control", "version": "0.1.4", ...}, "error": null, "meta": {...}}
 
 python -m agent_session_control plan create --runtime codex --cwd /tmp/demo-proj --json
 # {"ok": true, "data": {"dry_run": true, "status": "planned",
@@ -183,12 +183,12 @@ Headless 证明：对真实已安装 CLI 的一次性 stdio fixture
 缺失的登录/配额会作为明确限制返回，不算通过。
 
 配套 Skill：使用本库的 agent 应安装
-[`agent-session-control`](https://github.com/x0c/agent-session-control/blob/v0.1.3/skills/agent-session-control/SKILL.md)
-（[`references/mcp.md`](https://github.com/x0c/agent-session-control/blob/v0.1.3/skills/agent-session-control/references/mcp.md)），
+[`agent-session-control`](https://github.com/x0c/agent-session-control/blob/v0.1.4/skills/agent-session-control/SKILL.md)
+（[`references/mcp.md`](https://github.com/x0c/agent-session-control/blob/v0.1.4/skills/agent-session-control/references/mcp.md)），
 随 wheel 发布于 `agent_session_control/skills/agent-session-control`：
 
 ```sh
-npx skills add x0c/agent-session-control@v0.1.3 --skill agent-session-control
+npx skills add x0c/agent-session-control@v0.1.4 --skill agent-session-control
 ```
 
 该 Skill 只教授既有 JSON CLI 生命周期（plan/host/observe/release），不新增生命周期。

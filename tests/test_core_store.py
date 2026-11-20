@@ -304,3 +304,74 @@ def test_audit_trail_read_only_missing(tmp_path):
     finally:
         direct.close()
     assert count == len(store.audit_trail(limit=100)) == 1
+
+
+def test_cancel_queued_cancels_atomically_and_blocks_dispatch(tmp_path):
+    from agent_session_control.supervisor import CertainFailure, SupervisorHooks, SupervisorRunner
+
+    store = make_store(tmp_path)
+    rec, _ = store.create("alice", "k-cancel", spec(), initial())
+    msg, cancelled, created = store.cancel_queued(rec["run_id"], "alice", "c-1", rec["version"])
+    assert created is True
+    assert msg["action"] == "interrupt"
+    assert msg["state"] == "applied"
+    assert cancelled["execution"] == "interrupted"
+    assert cancelled["delivery"] == "rejected"
+    assert cancelled["error"]["code"] == "cancelled"
+    again_msg, again_run, again_created = store.cancel_queued(rec["run_id"], "alice", "c-1", "v2:ignored-on-retry")
+    assert again_created is False
+    assert again_msg["message_id"] == msg["message_id"]
+    assert again_run["execution"] == "interrupted"
+    with pytest.raises(ControlError) as exc:
+        store.update(rec["run_id"], {"execution": "starting"})
+    assert exc.value.code == "terminal_run"
+
+    called = []
+
+    def fail_if_called(*_args, **_kwargs):
+        called.append(True)
+        raise CertainFailure("should_not_run", "must not dispatch cancelled run")
+
+    hooks = SupervisorHooks(
+        resolve_target=lambda ref: {"id": ref},
+        prepare=fail_if_called,
+        submit=fail_if_called,
+        verify=fail_if_called,
+    )
+    runner = SupervisorRunner(store, rec["run_id"], hooks)
+    assert runner.dispatch() == -1
+    assert called == []
+
+
+def test_cancel_queued_falls_back_to_enqueue_once_starting(tmp_path):
+    store = make_store(tmp_path)
+    rec, _ = store.create("alice", "k-start", spec(), initial(execution="running", delivery="dispatching"))
+    msg, current, created = store.cancel_queued(rec["run_id"], "alice", "c-2", rec["version"])
+    assert created is True
+    assert msg["action"] == "interrupt"
+    assert msg["state"] == "queued"
+    assert current["execution"] == "running"
+    assert len(store.pending_messages(rec["run_id"])) == 1
+
+
+def test_withdraw_message_transitions_queued_and_does_not_block_settlement(tmp_path):
+    store = make_store(tmp_path)
+    rec, _ = store.create("alice", "k-w", spec(), initial(execution="running", delivery="native_recorded"))
+    msg, _ = store.enqueue(rec["run_id"], "alice", "m-1", {"action": "steer", "prompt": "more"}, rec["version"])
+    withdrawn, after = store.withdraw_message(rec["run_id"], msg["message_id"], "alice", rec["version"])
+    assert withdrawn["state"] == "withdrawn"
+    assert after["run_id"] == rec["run_id"]
+    assert store.pending_messages(rec["run_id"]) == []
+    actions = [row["action"] for row in store.audit_trail(target=msg["message_id"])]
+    assert "message.withdraw" in actions
+    again, _ = store.withdraw_message(rec["run_id"], msg["message_id"], "alice", rec["version"])
+    assert again["state"] == "withdrawn"
+    done = store.update(rec["run_id"], {"execution": "completed"}, settled_messages={"initial"})
+    assert done["execution"] == "completed"
+
+    rec2, _ = store.create("alice", "k-w2", spec(), initial(execution="running", delivery="native_recorded"))
+    msg2, _ = store.enqueue(rec2["run_id"], "alice", "m-2", {"action": "steer", "prompt": "sent"}, rec2["version"])
+    store.message_state(msg2["message_id"], "input_submitted")
+    with pytest.raises(ControlError) as exc:
+        store.withdraw_message(rec2["run_id"], msg2["message_id"], "alice", rec2["version"])
+    assert exc.value.code == "message_not_queued"

@@ -1390,9 +1390,8 @@ class LocalController:
             raise self._store_error(exc, "interrupt") from exc
         if record.get("execution") in ("completed", "failed", "interrupted", "unknown"):
             return
-        body = {"action": "interrupt"}
         try:
-            self.run_store.enqueue(run_id, actor, f"interrupt:{uuid.uuid4().hex[:12]}", body, record.get("version", ""))
+            self.run_store.cancel_queued(run_id, actor, f"interrupt:{uuid.uuid4().hex[:12]}", record.get("version", ""))
         except Exception as exc:
             raise self._store_error(exc, "interrupt") from exc
 

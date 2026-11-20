@@ -1,6 +1,6 @@
 # Integration
 
-Status: 0.1.3. This guide covers what consumers can adopt today and the
+Status: 0.1.4. This guide covers what consumers can adopt today and the
 exact tested limits.
 
 ## Fixed-version installation
@@ -10,7 +10,7 @@ backend runs on macOS and Linux; Windows/WSL are not supported (see
 platform limits below). Core needs only the standard library.
 
 ```sh
-VERSION=0.1.3
+VERSION=0.1.4
 SESSKIT=https://github.com/x0c/sesskit/releases/download/v0.3.2/sesskit-0.3.2-py3-none-any.whl
 
 # Core only (launch plans, store, correlation, JSON CLI): no extras.
@@ -336,7 +336,7 @@ stays protocol messages only; CLI envelopes never enter it.
 
 ```sh
 python -m agent_session_control version --json
-# {"ok": true, "data": {"package": "agent-session-control", "version": "0.1.3", ...}, "error": null, "meta": {...}}
+# {"ok": true, "data": {"package": "agent-session-control", "version": "0.1.4", ...}, "error": null, "meta": {...}}
 
 python -m agent_session_control plan create --runtime codex --cwd /tmp/demo-proj --json
 # {"ok": true, "data": {"dry_run": true, "status": "planned",
@@ -410,7 +410,7 @@ observation repeated by overlapping evidence ranges counts once
 ## Clean external consumer (acceptance shape)
 
 ```sh
-VERSION=0.1.3
+VERSION=0.1.4
 BASE=https://github.com/x0c/agent-session-control/releases/download/v${VERSION}
 CASE="$(mktemp -d "${TMPDIR:-/tmp}/asc-consumer-XXXXXX")"
 python -m venv "${CASE}/consumer-venv" && "${CASE}/consumer-venv/bin/pip" install \

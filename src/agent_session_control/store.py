@@ -299,7 +299,7 @@ class RunStore:
                 for message in messages:
                     if message["state"] in {"queued", "dispatching", "unknown"} or (
                         json.loads(message["body"])["action"] == "steer"
-                        and message["state"] != "rejected"
+                        and message["state"] not in {"rejected", "withdrawn"}
                         and message["id"] not in settled_messages
                     ):
                         return {**data, "version": run_version(data)}
@@ -401,6 +401,146 @@ class RunStore:
                 raise idempotency_conflict("This message key was used for different input.") from None
             return self._message(old), False
         return self._message(new), True
+
+    def cancel_queued(self, run_id: str, actor: str, key: str, expected: str) -> tuple[dict, dict, bool]:
+        """Cancel an undispatched queued run synchronously, or enqueue an active interrupt."""
+        body = {"action": "interrupt"}
+        fingerprint = digest(body)
+        try:
+            with self.connection(write=True) as conn:
+                row = self._row(conn, run_id)
+                old = conn.execute("SELECT * FROM messages WHERE run_id=? AND request_key=?", (run_id, key)).fetchone()
+                if old is not None:
+                    if old["digest"] != fingerprint:
+                        raise idempotency_conflict("This message key was used for different input.")
+                    return self._message(old), self._decode(row), False
+                data = json.loads(row["data"])
+                if run_version(data) != expected:
+                    raise conflict("The run changed; read its current version before writing.")
+                if data.get("execution") in SETTLED:
+                    raise ControlError(
+                        "terminal_run",
+                        "This run has settled; submit a new run on the same session.",
+                        EXIT_CONFLICT,
+                    )
+                ident = "msg_" + uuid.uuid4().hex[:16]
+                now = time.time()
+                if data.get("delivery") == "accepted" and data.get("execution") == "queued":
+                    detail = "run cancelled before any input was sent"
+                    conn.execute(
+                        "INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?)",
+                        (
+                            ident,
+                            run_id,
+                            actor,
+                            key,
+                            fingerprint,
+                            json.dumps(body, ensure_ascii=False),
+                            "applied",
+                            detail,
+                            now,
+                        ),
+                    )
+                    self._audit(conn, actor, "message.interrupt", ident)
+                    self._append(
+                        conn,
+                        run_id,
+                        ident,
+                        {
+                            "kind": "message",
+                            "message_id": ident,
+                            "action": "interrupt",
+                            "state": "applied",
+                            "detail": detail,
+                        },
+                    )
+                    data["delivery"] = "rejected"
+                    data["execution"] = "interrupted"
+                    data["error"] = {"code": "cancelled", "message": "interrupted before dispatch"}
+                    data["revision"] += 1
+                    data["updated_at"] = now
+                    data["version"] = run_version(data)
+                    conn.execute("UPDATE runs SET data=? WHERE id=?", (json.dumps(data, ensure_ascii=False), run_id))
+                    self._audit(conn, actor, "run.cancel", run_id)
+                    self._append(
+                        conn,
+                        run_id,
+                        f"state:{data['revision']}",
+                        {
+                            "kind": "state",
+                            "delivery": "rejected",
+                            "execution": "interrupted",
+                            "error": data["error"],
+                        },
+                    )
+                    new = conn.execute("SELECT * FROM messages WHERE id=?", (ident,)).fetchone()
+                    assert new is not None
+                    return self._message(new), data, True
+                conn.execute(
+                    "INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?)",
+                    (
+                        ident,
+                        run_id,
+                        actor,
+                        key,
+                        fingerprint,
+                        json.dumps(body, ensure_ascii=False),
+                        "queued",
+                        None,
+                        now,
+                    ),
+                )
+                self._audit(conn, actor, "message.interrupt", ident)
+                self._append(
+                    conn,
+                    run_id,
+                    ident,
+                    {"kind": "message", "message_id": ident, "action": "interrupt", "state": "queued"},
+                )
+                new = conn.execute("SELECT * FROM messages WHERE id=?", (ident,)).fetchone()
+                assert new is not None
+                data["version"] = run_version(data)
+                return self._message(new), data, True
+        except sqlite3.IntegrityError:
+            with self.connection() as conn:
+                row = self._row(conn, run_id)
+                old = conn.execute("SELECT * FROM messages WHERE run_id=? AND request_key=?", (run_id, key)).fetchone()
+            if old is None:  # pragma: no cover - defensive
+                raise conflict("Concurrent message enqueue collided; retry the identical request.") from None
+            if old["digest"] != fingerprint:
+                raise idempotency_conflict("This message key was used for different input.") from None
+            return self._message(old), self._decode(row), False
+
+    def withdraw_message(self, run_id: str, message_id: str, actor: str, expected: str) -> tuple[dict, dict]:
+        """Withdraw a queued control/follow-up message before it is dispatched."""
+        with self.connection(write=True) as conn:
+            row = self._row(conn, run_id)
+            data = self._decode(row)
+            if data["version"] != expected:
+                raise conflict("The run changed; read its current version before writing.")
+            msg = conn.execute("SELECT * FROM messages WHERE id=? AND run_id=?", (message_id, run_id)).fetchone()
+            if msg is None:
+                raise not_found(f"Unknown message {message_id} on run {run_id}")
+            if msg["state"] == "withdrawn":
+                return self._message(msg), data
+            if msg["state"] != "queued":
+                raise ControlError(
+                    "message_not_queued",
+                    f"Message {message_id} is already {msg['state']} and cannot be withdrawn.",
+                    EXIT_CONFLICT,
+                )
+            detail = "withdrawn by caller before dispatch"
+            conn.execute("UPDATE messages SET state='withdrawn', detail=? WHERE id=?", (detail, message_id))
+            self._audit(conn, actor, "message.withdraw", message_id)
+            self._append(
+                conn,
+                run_id,
+                f"{message_id}:withdrawn",
+                {"kind": "message", "message_id": message_id, "state": "withdrawn", "detail": detail},
+            )
+            updated = conn.execute("SELECT * FROM messages WHERE id=?", (message_id,)).fetchone()
+            assert updated is not None
+            return self._message(updated), data
 
     @staticmethod
     def _message(row: sqlite3.Row) -> dict:
